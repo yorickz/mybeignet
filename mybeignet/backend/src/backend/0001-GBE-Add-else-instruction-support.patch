@@ -1,0 +1,102 @@
+From c5baea99bd8d5cc861198ae9a2d8bb0fad839c11 Mon Sep 17 00:00:00 2001
+From: Yongjia Zhang <zhang_yong_jia@126.com>
+Date: Sat, 24 May 2014 20:50:22 +0800
+Subject: [PATCH] GBE: Add else instruction support
+
+Signed-off-by: Yongjia Zhang <yongjia.zhang@intel.com>
+---
+ backend/src/backend/gen_context.cpp        | 4 ++++
+ backend/src/backend/gen_encoder.cpp        | 4 +++-
+ backend/src/backend/gen_encoder.hpp        | 2 ++
+ backend/src/backend/gen_insn_selection.cpp | 8 ++++++++
+ backend/src/backend/gen_insn_selection.hxx | 1 +
+ 5 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/backend/src/backend/gen_context.cpp b/backend/src/backend/gen_context.cpp
+index 00cbf1d..6bf6860 100644
+--- a/backend/src/backend/gen_context.cpp
++++ b/backend/src/backend/gen_context.cpp
+@@ -244,6 +244,10 @@ namespace gbe
+           p->IF(src);
+         }
+         break;
++      case SEL_OP_ELSE:
++        insertJumpPos(insn);
++        p->ELSE(src);
++        break;
+       default: NOT_IMPLEMENTED;
+     }
+   }
+diff --git a/backend/src/backend/gen_encoder.cpp b/backend/src/backend/gen_encoder.cpp
+index e850eeb..eaec0c5 100644
+--- a/backend/src/backend/gen_encoder.cpp
++++ b/backend/src/backend/gen_encoder.cpp
+@@ -1104,6 +1104,7 @@ namespace gbe
+   }
+ 
+   ALU2_BRA(IF)
++  ALU2_BRA(ELSE)
+   ALU2_BRA(ENDIF)
+   ALU2_BRA(BRD)
+   ALU2_BRA(BRC)
+@@ -1115,7 +1116,8 @@ namespace gbe
+                insn.header.opcode == GEN_OPCODE_BRD  ||
+                insn.header.opcode == GEN_OPCODE_ENDIF ||
+                insn.header.opcode == GEN_OPCODE_IF ||
+-               insn.header.opcode == GEN_OPCODE_BRC);
++               insn.header.opcode == GEN_OPCODE_BRC ||
++               insn.header.opcode == GEN_OPCODE_ELSE);
+ 
+     if (insn.header.opcode != GEN_OPCODE_JMPI || (jumpDistance > -32769 && jumpDistance < 32768))  {
+           int offset = 0;
+diff --git a/backend/src/backend/gen_encoder.hpp b/backend/src/backend/gen_encoder.hpp
+index 8d5ef37..a394190 100644
+--- a/backend/src/backend/gen_encoder.hpp
++++ b/backend/src/backend/gen_encoder.hpp
+@@ -143,6 +143,8 @@ namespace gbe
+     void JMPI(GenRegister src, bool longjmp = false);
+     /*! IF indexed instruction */
+     void IF(GenRegister src);
++    /*! ELSE indexed instruction */
++    void ELSE(GenRegister src);
+     /*! ENDIF indexed instruction */
+     void ENDIF(GenRegister src);
+     /*! BRC indexed instruction */
+diff --git a/backend/src/backend/gen_insn_selection.cpp b/backend/src/backend/gen_insn_selection.cpp
+index a9f82d7..d974693 100644
+--- a/backend/src/backend/gen_insn_selection.cpp
++++ b/backend/src/backend/gen_insn_selection.cpp
+@@ -507,6 +507,8 @@ namespace gbe
+     int JMPI(Reg src, ir::LabelIndex target, ir::LabelIndex origin);
+     /*! IF indexed instruction */
+     void IF(Reg src, ir::LabelIndex jip, ir::LabelIndex uip);
++    /*! ELSE indexed instruction */
++    void ELSE(Reg src, ir::LabelIndex jip);
+     /*! ENDIF indexed instruction */
+     void ENDIF(Reg src, ir::LabelIndex jip, ir::LabelIndex endifLabel = ir::LabelIndex(0));
+     /*! BRD indexed instruction */
+@@ -977,6 +979,12 @@ namespace gbe
+     insn->index1 = uint16_t(uip);
+   }
+ 
++  void Selection::Opaque::ELSE(Reg src, ir::LabelIndex jip) {
++    SelectionInstruction *insn = this->appendInsn(SEL_OP_ELSE, 0, 1);
++    insn->src(0) = src;
++    insn->index = uint16_t(jip);
++  }
++
+   void Selection::Opaque::ENDIF(Reg src, ir::LabelIndex jip, ir::LabelIndex endifLabel) {
+     if(endifLabel == 0)
+       this->block->endifLabel = this->newAuxLabel();
+diff --git a/backend/src/backend/gen_insn_selection.hxx b/backend/src/backend/gen_insn_selection.hxx
+index ddc9d5e..2d70982 100644
+--- a/backend/src/backend/gen_insn_selection.hxx
++++ b/backend/src/backend/gen_insn_selection.hxx
+@@ -84,3 +84,4 @@ DECL_SELECTION_IR(BRC, UnaryInstruction)
+ DECL_SELECTION_IR(BRD, UnaryInstruction)
+ DECL_SELECTION_IR(IF, UnaryInstruction)
+ DECL_SELECTION_IR(ENDIF, UnaryInstruction)
++DECL_SELECTION_IR(ELSE, UnaryInstruction)
+-- 
+1.8.3.2
+

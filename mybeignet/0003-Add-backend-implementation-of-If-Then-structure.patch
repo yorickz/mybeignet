@@ -1,0 +1,496 @@
+From cc017e629fcfc779aad914a167d4982fd6a4dbab Mon Sep 17 00:00:00 2001
+From: Yongjia Zhang <zhang_yong_jia@126.com>
+Date: Fri, 23 May 2014 16:22:45 +0800
+Subject: [PATCH 3/3] Add backend implementation of If-Then structure
+
+Uses gen asm instruction IF and ENDIF implement the structures
+which have been identified by structural analysis. Since this
+is experimental, so I made this invalid by default through macros,
+so if want to try this, you should add '#define TRANSFORM_UNSTRUCTURE'
+in file "structural_analysis.hpp".
+
+Signed-off-by: Yongjia Zhang <yongjia.zhang@intel.com>
+---
+ backend/src/backend/gen_insn_selection.cpp |  82 ++++++++++++--
+ backend/src/ir/function.cpp                |   2 +-
+ backend/src/ir/function.hpp                |   7 ++
+ backend/src/ir/structural_analysis.cpp     | 171 ++++++++++++++++++++++++++++-
+ backend/src/ir/structural_analysis.hpp     |  12 +-
+ 5 files changed, 262 insertions(+), 12 deletions(-)
+
+diff --git a/backend/src/backend/gen_insn_selection.cpp b/backend/src/backend/gen_insn_selection.cpp
+index 88ec408..a9f82d7 100644
+--- a/backend/src/backend/gen_insn_selection.cpp
++++ b/backend/src/backend/gen_insn_selection.cpp
+@@ -102,6 +102,7 @@
+ #include "ir/profile.hpp"
+ #include "sys/cvar.hpp"
+ #include "sys/vector.hpp"
++#include "ir/structural_analysis.hpp"
+ #include <algorithm>
+ 
+ namespace gbe
+@@ -507,7 +508,7 @@ namespace gbe
+     /*! IF indexed instruction */
+     void IF(Reg src, ir::LabelIndex jip, ir::LabelIndex uip);
+     /*! ENDIF indexed instruction */
+-    void ENDIF(Reg src, ir::LabelIndex jip);
++    void ENDIF(Reg src, ir::LabelIndex jip, ir::LabelIndex endifLabel = ir::LabelIndex(0));
+     /*! BRD indexed instruction */
+     void BRD(Reg src, ir::LabelIndex jip);
+     /*! BRC indexed instruction */
+@@ -976,8 +977,11 @@ namespace gbe
+     insn->index1 = uint16_t(uip);
+   }
+ 
+-  void Selection::Opaque::ENDIF(Reg src, ir::LabelIndex jip) {
+-    this->block->endifLabel = this->newAuxLabel();
++  void Selection::Opaque::ENDIF(Reg src, ir::LabelIndex jip, ir::LabelIndex endifLabel) {
++    if(endifLabel == 0)
++      this->block->endifLabel = this->newAuxLabel();
++    else
++      this->block->endifLabel = endifLabel;
+     this->LABEL(this->block->endifLabel);
+     SelectionInstruction *insn = this->appendInsn(SEL_OP_ENDIF, 0, 1);
+     insn->src(0) = src;
+@@ -1504,13 +1508,31 @@ namespace gbe
+           this->block->isLargeBlock = true;
+         }
+ 
++#ifdef TRANSFORM_UNSTRUCTURE
++        const ir::BasicBlock *bb = insn.getParent();
++
++        needEndif = needEndif && bb->needEndif;
+         if (needEndif) {
++          if(!bb->needIf) {
++            this->ENDIF(GenRegister::immd(0), bb->endifLabel, bb->endifLabel);
++            needEndif = false;
++          }
++          else {
++            const ir::BasicBlock *curr = insn.getParent();
++            const ir::BasicBlock *next = curr->getNextBlock();
++            this->ENDIF(GenRegister::immd(0), next->getLabelIndex());
++            needEndif = false;
++          }
++        }
++#endif
++#ifndef TRANSFORM_UNSTRUCTURE
++        if(needEndif) {
+           const ir::BasicBlock *curr = insn.getParent();
+           const ir::BasicBlock *next = curr->getNextBlock();
+           this->ENDIF(GenRegister::immd(0), next->getLabelIndex());
+           needEndif = false;
+         }
+-
++#endif
+         // Output the code in the current basic block
+         this->endBackwardGeneration();
+       }
+@@ -3174,6 +3196,11 @@ namespace gbe
+       GBE_ASSERTM(label < GEN_MAX_LABEL, "We reached the maximum label number which is reserved for barrier handling");
+       sel.LABEL(label);
+ 
++#ifdef TRANSFORM_UNSTRUCTURE
++      if(!insn.getParent()->needIf)
++        return true;
++#endif
++
+       // Do not emit any code for the "returning" block. There is no need for it
+       if (insn.getParent() == &sel.ctx.getFunction().getBottomBlock())
+         return true;
+@@ -3242,7 +3269,14 @@ namespace gbe
+         }
+         sel.push();
+           sel.curr.predicate = GEN_PREDICATE_NORMAL;
+-          sel.IF(GenRegister::immd(0), sel.block->endifLabel, sel.block->endifLabel);
++#ifdef TRANSFORM_UNSTRUCTURE
++          if(!insn.getParent()->needEndif && insn.getParent()->needIf) {
++            ir::LabelIndex label = insn.getParent()->endifLabel;
++            sel.IF(GenRegister::immd(0), label, label);
++          }
++          else
++#endif
++            sel.IF(GenRegister::immd(0), sel.block->endifLabel, sel.block->endifLabel);
+         sel.pop();
+       }
+ 
+@@ -3435,8 +3469,14 @@ namespace gbe
+         // Update the PcIPs
+         const LabelIndex jip = sel.ctx.getLabelIndex(&insn);
+         sel.MOV(ip, GenRegister::immuw(uint16_t(dst)));
+-        if (!sel.block->hasBarrier)
+-          sel.ENDIF(GenRegister::immd(0), nextLabel);
++        if (!sel.block->hasBarrier) {
++#ifdef TRANSFORM_UNSTRUCTURE
++          if(insn.getParent()->needEndif && !insn.getParent()->needIf)
++            sel.ENDIF(GenRegister::immd(0), insn.getParent()->endifLabel, insn.getParent()->endifLabel);
++          else
++#endif
++            sel.ENDIF(GenRegister::immd(0), nextLabel);
++        }
+         sel.block->endifOffset = -1;
+         if (nextLabel == jip) return;
+         // Branch to the jump target
+@@ -3494,8 +3534,14 @@ namespace gbe
+         // Update the PcIPs
+         sel.MOV(ip, GenRegister::immuw(uint16_t(dst)));
+         sel.block->endifOffset = -1;
+-        if (!sel.block->hasBarrier)
+-          sel.ENDIF(GenRegister::immd(0), next);
++        if (!sel.block->hasBarrier) {
++#ifdef TRANSFORM_UNSTRUCTURE
++          if(insn.getParent()->needEndif && !insn.getParent()->needIf)
++            sel.ENDIF(GenRegister::immd(0), insn.getParent()->endifLabel, insn.getParent()->endifLabel);
++          else
++#endif
++            sel.ENDIF(GenRegister::immd(0), next);
++        }
+         // Branch to the jump target
+         sel.push();
+           sel.curr.execWidth = 1;
+@@ -3528,6 +3574,24 @@ namespace gbe
+         else
+           this->emitForwardBranch(sel, insn, dst, src);
+         sel.pop();
++      }
++      else if(opcode == OP_IF) {
++        const Register pred = insn.getPredicateIndex();
++        const LabelIndex jip = insn.getLabelIndex();
++        sel.push();
++          sel.curr.physicalFlag = 0;
++          sel.curr.flagIndex = (uint64_t)pred;
++          sel.curr.inversePredicate = 1;
++          sel.curr.predicate = GEN_PREDICATE_NORMAL;
++          sel.IF(GenRegister::immd(0), jip, jip);
++          sel.curr.inversePredicate = 0;
++        sel.pop();
++      } else if(opcode == OP_ENDIF) {
++        const LabelIndex label = insn.getLabelIndex();
++        sel.push();
++          sel.curr.predicate = GEN_PREDICATE_NONE;
++          sel.ENDIF(GenRegister::immd(0), label, label);
++        sel.pop();
+       } else
+         NOT_IMPLEMENTED;
+ 
+diff --git a/backend/src/ir/function.cpp b/backend/src/ir/function.cpp
+index 83936ad..217cdb1 100644
+--- a/backend/src/ir/function.cpp
++++ b/backend/src/ir/function.cpp
+@@ -309,7 +309,7 @@ namespace ir {
+   // Basic Block
+   ///////////////////////////////////////////////////////////////////////////
+ 
+-  BasicBlock::BasicBlock(Function &fn) : fn(fn) {
++  BasicBlock::BasicBlock(Function &fn) : fn(fn), needEndif(true), needIf(true) {
+     this->nextBlock = this->prevBlock = NULL;
+   }
+ 
+diff --git a/backend/src/ir/function.hpp b/backend/src/ir/function.hpp
+index 2c60f4d..5b66637 100644
+--- a/backend/src/ir/function.hpp
++++ b/backend/src/ir/function.hpp
+@@ -82,6 +82,13 @@ namespace ir {
+       }
+     }
+     set <Register> undefPhiRegs;
++
++  /* these three are used by structure transforming */
++  public:
++    bool needEndif;
++    bool needIf;
++    LabelIndex endifLabel;
++
+   private:
+     friend class Function; //!< Owns the basic blocks
+     BlockSet predecessors; //!< Incoming blocks
+diff --git a/backend/src/ir/structural_analysis.cpp b/backend/src/ir/structural_analysis.cpp
+index fad77b3..d092dda 100644
+--- a/backend/src/ir/structural_analysis.cpp
++++ b/backend/src/ir/structural_analysis.cpp
+@@ -15,6 +15,143 @@ namespace analysis
+   }
+ 
+ 
++  void ControlTree::markNeedIf(Node *node, bool status)
++  {
++    if(node->type() == BasicBlock)
++    {
++      ir::BasicBlock* bb = ((BasicBlockNode*)node)->getBasicBlock();
++      bb->needIf = status;
++      return;
++    }
++
++    NodeList::iterator it = node->children.begin();
++    while(it != node->children.end())
++    {
++      markNeedIf(*it, status);
++      it++;
++    }
++  }
++
++
++  void ControlTree::markNeedEndif(Node *node, bool status)
++  {
++    if(node->type() == BasicBlock)
++    {
++      ir::BasicBlock* bb = ((BasicBlockNode*)node)->getBasicBlock();
++      bb->needEndif = status;
++      return;
++    }
++
++    NodeList::iterator it = node->children.begin();
++    while(it != node->children.end())
++    {
++      markNeedEndif(*it, status);
++      it++;
++    }
++  }
++
++
++ void ControlTree::markStructuredNodes(Node *node)
++  {
++    node->mark = true;
++    NodeList::iterator it = node->children.begin();
++    while(it != node->children.end())
++    {
++      markStructuredNodes(*it);
++      it++;
++    }
++  }
++
++
++  void ControlTree::handleIfNode(Node *node, ir::LabelIndex& endiflabel)
++  {
++    ir::BasicBlock *pbb = node->getExit();
++    ir::BranchInstruction* pinsn = static_cast<ir::BranchInstruction *>(pbb->getLastInstruction());
++    ir::Register reg = pinsn->getPredicateIndex();
++    ir::BasicBlock::iterator it = pbb->end();
++    it--;
++    pbb->erase(it);
++    ir::Instruction insn = ir::IF(endiflabel, reg);
++    ir::Instruction* p_new_insn = pbb->getParent().newInstruction(insn);
++    pbb->append(*p_new_insn);
++  }
++
++
++  void ControlTree::handleThenNode(Node *node, ir::LabelIndex& endiflabel)
++  {
++    ir::BasicBlock *pbb = node->getExit();
++    ir::BasicBlock::iterator it = pbb->end();
++    it--;
++    ir::Instruction *p_last_insn = pbb->getLastInstruction();
++    /* use a label to mark the position of ENDIF */
++    endiflabel = fn->newLabel();
++
++    ir::Instruction insn = ir::ENDIF(endiflabel);
++    ir::Instruction* p_new_insn = pbb->getParent().newInstruction(insn);
++    bool append_bra = false;
++    if((*it).getOpcode() == ir::OP_BRA)
++    {
++      pbb->erase(it);
++      append_bra = true;
++    }
++    pbb->append(*p_new_insn);
++    if(append_bra)
++      pbb->append(*p_last_insn);
++  }
++
++  void ControlTree::handleStructuredNodes()
++  {
++    NodeVector::iterator it;
++    NodeVector::iterator end = nodes.end();
++    NodeVector::iterator begin = nodes.begin();
++    it = end;
++    it--;
++
++    while(it != begin)
++    {
++      /* now only consider IfThen */
++      if((*it)->type() == IfThen)
++      {
++        if(false == (*it)->mark && (*it)->canBeHandled)
++        {
++          markStructuredNodes(*it);
++          markNeedEndif(*it, false);
++          markNeedIf(*it, false);
++          markNeedIf(*((*it)->children.begin()), true);
++          markNeedEndif(*((*it)->children.begin()), true);
++          ir::BasicBlock* entry = (*it)->getEntry();
++          ir::BasicBlock* eexit = (*it)->getExit();
++          entry->needEndif = false;
++          eexit->needEndif = true;
++          entry->endifLabel = fn->newLabel();
++          eexit->endifLabel = entry->endifLabel;
++        }
++      }
++      it--;
++    }
++
++    it = begin;
++    while(it != end)
++    {
++      if((*it)->canBeHandled)
++      {
++        switch((*it)->type())
++        {
++          case IfThen:
++            NodeList::iterator child_iter = (*it)->children.end();
++            ir::LabelIndex endiflabel;
++            child_iter--;
++            handleThenNode(*child_iter, endiflabel);
++            child_iter--;
++            handleIfNode(*child_iter, endiflabel);
++            break;
++        }
++      }
++      it++;
++    }
++  }
++
++
+   Node* ControlTree::insertNode(Node *p_node)
+   {
+     nodes.push_back(p_node);
+@@ -203,6 +340,18 @@ namespace analysis
+     if(nodes.size() >=2 )
+     {
+       Node* p = new BlockNode(nodes);
++
++      NodeList::const_iterator iter = nodes.begin();
++      while(iter != nodes.end())
++      {
++        if((*iter)->canBeHandled == false)
++        {
++          p->canBeHandled = false;
++          break;
++        }
++        iter++;
++      }
++
+       return insertNode(p);
+     }
+ 
+@@ -223,6 +372,10 @@ namespace analysis
+         nset.insert(n);
+ 
+         Node* p = new IfThenNode(node, n);
++
++        if(node->canBeHandled == false || n->canBeHandled == false)
++          p->canBeHandled = false;
++
+         return insertNode(p);
+       }
+ 
+@@ -237,6 +390,10 @@ namespace analysis
+         nset.insert(m);
+ 
+         Node* p = new IfThenNode(node, m);
++
++        if(node->canBeHandled == false || m->canBeHandled == false)
++          p->canBeHandled = false;
++
+         return insertNode(p);
+       }
+ 
+@@ -252,6 +409,9 @@ namespace analysis
+         nset.insert(m);
+ 
+         Node* p = new IfElseNode(node, n, m);
++
++        p->canBeHandled = false;
++
+         return insertNode(p);
+       }
+ 
+@@ -267,6 +427,9 @@ namespace analysis
+         nset.insert(n);
+ 
+         Node* p = new IfElseNode(node, m, n);
++
++        p->canBeHandled = false;
++
+         return insertNode(p);
+       }
+     }
+@@ -304,6 +467,9 @@ namespace analysis
+       if(node->succs().find(node) != node->succs().end())
+       {
+         Node* p = new SelfLoopNode(node);
++
++        p->canBeHandled = false;
++
+         return insertNode(p);
+       }
+       else
+@@ -328,6 +494,9 @@ namespace analysis
+          node->preds().size() == 2 && (*m)->preds().size() == 1)
+       {
+         Node* p = new WhileLoopNode(node, *m);
++
++        p->canBeHandled = false;
++
+         return insertNode(p);
+       }
+     }
+@@ -490,12 +659,12 @@ namespace analysis
+       }
+ 
+     } while(post_order.size()>1);
+-
+   }
+ 
+   void ControlTree::analyze()
+   {
+     initializeNodes();
+     structuralAnalysis(nodes_entry);
++    handleStructuredNodes();
+   }
+ }
+diff --git a/backend/src/ir/structural_analysis.hpp b/backend/src/ir/structural_analysis.hpp
+index c23d0d5..005eac5 100644
+--- a/backend/src/ir/structural_analysis.hpp
++++ b/backend/src/ir/structural_analysis.hpp
+@@ -13,6 +13,8 @@
+ #include <list>
+ #include <algorithm>
+ 
++//#define TRANSFORM_UNSTRUCTURE
++
+ namespace analysis
+ {
+   using namespace std;
+@@ -40,7 +42,7 @@ namespace analysis
+   class Node
+   {
+   public:
+-    Node(RegionType rtype, const NodeList& children): has_barrier(false)
++    Node(RegionType rtype, const NodeList& children): has_barrier(false), mark(false), canBeHandled(true)
+     {
+       this->rtype = rtype;
+       this->children = children;
+@@ -61,6 +63,8 @@ namespace analysis
+     NodeList children;
+     Node* fall_through;
+     bool has_barrier;
++    bool mark;
++    bool canBeHandled;
+   };
+ 
+   /* represents basic block */
+@@ -265,6 +269,12 @@ namespace analysis
+     bool isBackedge(const Node*, const Node*);
+     bool pathBack(Node*, Node*);
+     bool checkForBarrier(const ir::BasicBlock*);
++    void markStructuredNodes(Node *);
++    void markNeedEndif(Node *, bool);
++    void markNeedIf(Node *, bool);
++    void handleIfNode(Node *, ir::LabelIndex&);
++    void handleThenNode(Node *, ir::LabelIndex&);
++    void handleStructuredNodes();
+ 
+   private:
+     NodeVector nodes;
+-- 
+1.8.3.2
+

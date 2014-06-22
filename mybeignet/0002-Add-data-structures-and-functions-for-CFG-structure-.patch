@@ -1,0 +1,897 @@
+From de42d31c5f90dc249bc53ea45a70fd7a4a781d3a Mon Sep 17 00:00:00 2001
+From: Yongjia Zhang <zhang_yong_jia@126.com>
+Date: Thu, 8 May 2014 22:12:22 +0800
+Subject: [PATCH 2/3] Add data structures and functions for CFG structure
+ identification
+
+This patch adds primary control flow analysis data structures and
+functions. These can identify structured regions such as If-Then,
+If-Else, Self-Loop and While-Loop.
+
+Signed-off-by: Yongjia Zhang <yongjia.zhang@intel.com>
+---
+ backend/src/CMakeLists.txt             |   2 +
+ backend/src/ir/function.cpp            |   4 +-
+ backend/src/ir/function.hpp            |   4 +-
+ backend/src/ir/structural_analysis.cpp | 501 +++++++++++++++++++++++++++++++++
+ backend/src/ir/structural_analysis.hpp | 279 ++++++++++++++++++
+ backend/src/llvm/llvm_to_gen.cpp       |  14 +
+ 6 files changed, 800 insertions(+), 4 deletions(-)
+ create mode 100644 backend/src/ir/structural_analysis.cpp
+ create mode 100644 backend/src/ir/structural_analysis.hpp
+
+diff --git a/backend/src/CMakeLists.txt b/backend/src/CMakeLists.txt
+index 2d59644..4a58ff7 100644
+--- a/backend/src/CMakeLists.txt
++++ b/backend/src/CMakeLists.txt
+@@ -135,6 +135,8 @@ else (GBE_USE_BLOB)
+     ir/value.hpp
+     ir/lowering.cpp
+     ir/lowering.hpp
++    ir/structural_analysis.cpp
++    ir/structural_analysis.hpp
+     backend/context.cpp
+     backend/context.hpp
+     backend/program.cpp
+diff --git a/backend/src/ir/function.cpp b/backend/src/ir/function.cpp
+index b0df412..83936ad 100644
+--- a/backend/src/ir/function.cpp
++++ b/backend/src/ir/function.cpp
+@@ -184,12 +184,12 @@ namespace ir {
+       return &bb == this->blocks[0];
+   }
+ 
+-  const BasicBlock &Function::getTopBlock(void) const {
++  BasicBlock &Function::getTopBlock(void) const {
+     GBE_ASSERT(blockNum() > 0 && blocks[0] != NULL);
+     return *blocks[0];
+   }
+ 
+-  const BasicBlock &Function::getBottomBlock(void) const {
++  BasicBlock &Function::getBottomBlock(void) const {
+     const uint32_t n = blockNum();
+     GBE_ASSERT(n > 0 && blocks[n-1] != NULL);
+     return *blocks[n-1];
+diff --git a/backend/src/ir/function.hpp b/backend/src/ir/function.hpp
+index 8831d47..2c60f4d 100644
+--- a/backend/src/ir/function.hpp
++++ b/backend/src/ir/function.hpp
+@@ -260,9 +260,9 @@ namespace ir {
+     /*! Says if this is the top basic block (entry point) */
+     bool isEntryBlock(const BasicBlock &bb) const;
+     /*! Get function the entry point block */
+-    const BasicBlock &getTopBlock(void) const;
++    BasicBlock &getTopBlock(void) const;
+     /*! Get the last block */
+-    const BasicBlock &getBottomBlock(void) const;
++    BasicBlock &getBottomBlock(void) const;
+     /*! Get the last block */
+     BasicBlock &getBottomBlock(void);
+     /*! Get block from its label */
+diff --git a/backend/src/ir/structural_analysis.cpp b/backend/src/ir/structural_analysis.cpp
+new file mode 100644
+index 0000000..fad77b3
+--- /dev/null
++++ b/backend/src/ir/structural_analysis.cpp
+@@ -0,0 +1,501 @@
++#include "structural_analysis.hpp"
++
++namespace analysis
++{
++
++  ControlTree::~ControlTree()
++  {
++    NodeVector::iterator iter = nodes.begin();
++    NodeVector::iterator iter_end = nodes.end();
++    while(iter != iter_end)
++    {
++      delete *iter;
++      iter++;
++    }
++  }
++
++
++  Node* ControlTree::insertNode(Node *p_node)
++  {
++    nodes.push_back(p_node);
++    return p_node;
++  }
++
++
++  bool ControlTree::checkForBarrier(const ir::BasicBlock* bb)
++  {
++    ir::BasicBlock::const_iterator iter = bb->begin();
++    ir::BasicBlock::const_iterator iter_end = bb->end();
++    while(iter != iter_end)
++    {
++      if((*iter).getOpcode() == ir::OP_SYNC)
++        return true;
++      iter++;
++    }
++
++    return false;
++  }
++
++
++  void ControlTree::initializeNodes()
++  {
++    ir::BasicBlock& tmp_bb = fn->getTopBlock();
++    ir::BasicBlock* p_tmp_bb = &tmp_bb;
++    Node* p = NULL;
++
++    if(NULL != p_tmp_bb)
++    {
++      Node *p_tmp_node = new BasicBlockNode(p_tmp_bb);
++      if(checkForBarrier(p_tmp_bb))
++        p_tmp_node->hasBarrier() = true;
++      nodes.push_back(p_tmp_node);
++      bbmap[p_tmp_bb] = p_tmp_node;
++      p_tmp_bb = p_tmp_bb->getNextBlock();
++      p = p_tmp_node;
++    }
++
++    while(p_tmp_bb != NULL)
++    {
++      Node *p_tmp_node = new BasicBlockNode(p_tmp_bb);
++      if(checkForBarrier(p_tmp_bb))
++        p_tmp_node->hasBarrier() = true;
++      p->fallthrough() = p_tmp_node;
++      p = p_tmp_node;
++      nodes.push_back(p_tmp_node);
++      bbmap[p_tmp_bb] = p_tmp_node;
++      p_tmp_bb = p_tmp_bb->getNextBlock();
++    }
++
++    if(NULL != p)
++      p->fallthrough() = NULL;
++
++    p_tmp_bb = &tmp_bb;
++
++    this->nodes_entry = bbmap[p_tmp_bb];
++
++    while(p_tmp_bb != NULL)
++    {
++      ir::BlockSet::const_iterator iter_begin = p_tmp_bb->getPredecessorSet().begin();
++      ir::BlockSet::const_iterator iter_end = p_tmp_bb->getPredecessorSet().end();
++      while(iter_begin != iter_end)
++      {
++        bbmap[p_tmp_bb]->preds().insert(bbmap[*iter_begin]);
++        iter_begin++;
++      }
++
++      iter_begin = p_tmp_bb->getSuccessorSet().begin();
++      iter_end = p_tmp_bb->getSuccessorSet().end();
++      while(iter_begin != iter_end)
++      {
++        bbmap[p_tmp_bb]->succs().insert(bbmap[*iter_begin]);
++        iter_begin++;
++      }
++
++      p_tmp_bb = p_tmp_bb->getNextBlock();
++    }
++  }
++
++
++  void ControlTree::DFSPostOrder(Node *start)
++  {
++    visited.insert(start);
++    NodeSet::iterator y;
++    NodeSet::iterator iter_begin = start->succs().begin();
++    NodeSet::iterator iter_end = start->succs().end();
++    for(y = iter_begin; y != iter_end; ++y )
++    {
++      if(visited.find(*y) != visited.end())
++        continue;
++      DFSPostOrder(*y);
++    }
++    post_order.push_back(start);
++  }
++
++
++  bool ControlTree::isCyclic(Node* node)
++  {
++    if(node->type() == NaturalLoop ||
++       node->type() == WhileLoop ||
++       node->type() == SelfLoop)
++      return true;
++
++    return false;
++  }
++
++
++  bool ControlTree::isBackedge(const Node* head, const Node* tail)
++  {
++    const Node* match[] = {head, tail};
++    NodeList::iterator n = find_first_of(post_order.begin(), post_order.end(), match, match + 2);
++
++    if(*n == head)
++      return true;
++    if(*n == tail)
++      return false;
++
++    return false;
++  }
++
++
++  bool ControlTree::pathBack(Node* m, Node* n)
++  {
++    for(NodeSet::const_iterator iter = n->preds().begin(); iter!= n->preds().end(); iter++)
++    {
++      if(isBackedge(*iter, n))
++      {
++        visited.clear();
++        if(path(m, *iter, n))
++          return true;
++      }
++    }
++
++    return false;
++  }
++
++  /* totally textbook */
++  Node* ControlTree::acyclicRegionType(Node* node, NodeSet& nset)
++  {
++    nset.clear();
++    Node *n;
++    bool p, s;
++    NodeList nodes;
++
++    n = node;
++    p = true;
++    s = (n->succs().size()==1);
++
++    while(p && s)
++    {
++      if(nset.insert(n).second)
++        nodes.push_back(n);
++      n = *(n->succs().begin());
++      p = (n->preds().size() == 1);
++      s = (n->succs().size() == 1);
++    }
++
++    if(p)
++    {
++      if(nset.insert(n).second)
++        nodes.push_back(n);
++    }
++
++    n = node;
++    p = (n->preds().size() == 1);
++    s = true;
++
++    while(p && s)
++    {
++      if(nset.insert(n).second)
++        nodes.push_front(n);
++      n = *(n->preds().begin());
++      p = (n->preds().size() == 1);
++      s = (n->succs().size() == 1);
++    }
++
++    if(s)
++    {
++      if(nset.insert(n).second)
++        nodes.push_front(n);
++    }
++
++    node = n;
++
++    if(nodes.size() >=2 )
++    {
++      Node* p = new BlockNode(nodes);
++      return insertNode(p);
++    }
++
++    else if(node->succs().size() == 2)
++    {
++      Node *m;
++      m = *(node->succs().begin());
++      n = *(++(node->succs().begin()));
++
++      /* check for if node then n */
++      if(n->succs().size() == 1 &&
++         n->preds().size() == 1 &&
++         *(n->succs().begin()) == m &&
++         !n->hasBarrier())
++      {
++        nset.clear();
++        nset.insert(node);
++        nset.insert(n);
++
++        Node* p = new IfThenNode(node, n);
++        return insertNode(p);
++      }
++
++      /* check for if node then m */
++      if(m->succs().size() == 1 &&
++         m->preds().size() == 1 &&
++         *(m->succs().begin()) == n &&
++         !m->hasBarrier())
++      {
++        nset.clear();
++        nset.insert(node);
++        nset.insert(m);
++
++        Node* p = new IfThenNode(node, m);
++        return insertNode(p);
++      }
++
++      /* check for if node then n else m */
++      if(m->succs().size() == 1 && n->succs().size() == 1 &&
++         m->preds().size() == 1 && n->preds().size() == 1 &&
++         *(m->succs().begin()) == *(n->succs().begin()) &&
++         node->fallthrough() == n && !m->hasBarrier() && !n->hasBarrier())
++      {
++        nset.clear();
++        nset.insert(node);
++        nset.insert(n);
++        nset.insert(m);
++
++        Node* p = new IfElseNode(node, n, m);
++        return insertNode(p);
++      }
++
++      /* check for if node then m else n */
++      if(m->succs().size() == 1 && n->succs().size() == 1 &&
++         m->preds().size() == 1 && n->preds().size() == 1 &&
++         *(m->succs().begin()) == *(n->succs().begin()) &&
++         node->fallthrough() == m && !m->hasBarrier() && !n->hasBarrier())
++      {
++        nset.clear();
++        nset.insert(node);
++        nset.insert(m);
++        nset.insert(n);
++
++        Node* p = new IfElseNode(node, m, n);
++        return insertNode(p);
++      }
++    }
++
++    return NULL;
++  }
++
++
++  bool ControlTree::path(Node *from, Node *to, Node *notthrough)
++  {
++
++    if(from == notthrough || visited.find(from) != visited.end())
++      return false;
++
++    if(from == to)
++      return true;
++
++    visited.insert(from);
++
++    for(NodeSet::const_iterator s = from->succs().begin(); s != from->succs().end(); s++)
++    {
++      if(path(*s, to, notthrough))
++        return true;
++    }
++
++    return false;
++  }
++
++
++  Node * ControlTree::cyclicRegionType(Node *node, NodeList &nset)
++  {
++    /* check for self-loop */
++    if(nset.size() == 1)
++    {
++      if(node->succs().find(node) != node->succs().end())
++      {
++        Node* p = new SelfLoopNode(node);
++        return insertNode(p);
++      }
++      else
++        return NULL;
++    }
++
++    /* check for improper region */
++    for(NodeList::const_iterator m = nset.begin(); m != nset.end(); m++)
++    {
++      visited.clear();
++      if(!path(node, *m))
++        return NULL;
++    }
++
++    /* check for while loop */
++    NodeList::iterator m;
++    for(m = nset.begin(); m != nset.end(); ++m)
++    {
++      if(*m == node)
++        continue;
++      if(node->succs().size() == 2 && (*m)->succs().size() == 1 &&
++         node->preds().size() == 2 && (*m)->preds().size() == 1)
++      {
++        Node* p = new WhileLoopNode(node, *m);
++        return insertNode(p);
++      }
++    }
++
++    /* TODO add code here to identify natural loop */
++    return NULL;
++  }
++
++
++  void ControlTree::reduce(Node* node,  NodeSet nodeSet)
++  {
++    NodeSet::iterator n;
++    for(n = nodeSet.begin(); n != nodeSet.end(); n++)
++    {
++      NodeSet::iterator p;
++      for(p = (*n)->preds().begin(); p != (*n)->preds().end(); p++)
++      {
++        if(nodeSet.find(*p) != nodeSet.end())
++          continue;
++
++        (*p)->succs().erase(*n);
++
++        (*p)->succs().insert(node);
++        node->preds().insert(*p);
++
++        if((*p)->fallthrough() == *n)
++          (*p)->fallthrough() = node;
++      }
++
++
++     NodeSet::iterator s;
++     for(s = (*n)->succs().begin(); s != (*n)->succs().end(); s++)
++     {
++        if(nodeSet.find(*s) != nodeSet.end())
++          continue;
++
++       (*s)->preds().erase(*n);
++
++       (*s)->preds().insert(node);
++       node->succs().insert(*s);
++
++       if((*n)->fallthrough() == *s)
++         node->fallthrough() = *s;
++     }
++    }
++
++    if(!isCyclic(node))
++    {
++      for(n = nodeSet.begin(); n != nodeSet.end(); n++)
++      {
++        bool shouldbreak = false;
++        NodeSet::iterator p;
++        for(p = (*n)->preds().begin(); p != (*n)->preds().end(); p++)
++        {
++          if(nodeSet.find(*p) == nodeSet.end())
++            continue;
++
++          if(isBackedge(*p, *n))
++          {
++            node->preds().insert(node);
++            node->succs().insert(node);
++
++            shouldbreak = true;
++            break;
++          }
++        }
++
++        if(shouldbreak)
++          break;
++      }
++    }
++
++    compact(node, nodeSet);
++  }
++
++
++  void ControlTree::compact(Node* node,  NodeSet nodeSet)
++  {
++    NodeList::iterator n, pos;
++    for(n = post_order.begin(); n!= post_order.end() && !nodeSet.empty();)
++    {
++      if(!nodeSet.erase(*n))
++      {
++        n++;
++        continue;
++      }
++
++      n = post_order.erase(n);
++      pos = n;
++    }
++
++    post_ctr = post_order.insert(pos, node);
++  }
++
++
++  void ControlTree::structuralAnalysis(Node *entry)
++  {
++    Node* n;
++    NodeSet nset;
++    NodeList reachUnder;
++    bool changed;
++    do
++    {
++      changed = false;
++      post_order.clear();
++      visited.clear();
++
++      DFSPostOrder(entry);
++      post_ctr = post_order.begin();
++
++      while(post_order.size() > 1 && post_ctr != post_order.end())
++      {
++        n = *post_ctr;
++        Node* region = acyclicRegionType(n, nset);
++
++        if( NULL != region)
++        {
++          changed = true;
++
++          reduce(region, nset);
++
++          if(nset.find(entry) != nset.end())
++            entry = region;
++        }
++        else
++        {
++          reachUnder.clear();
++          nset.clear();
++          for(NodeList::const_iterator m = post_order.begin(); m != post_order.end(); m++)
++          {
++            if(*m != n && pathBack(*m, n))
++            {
++              reachUnder.push_front(*m);
++              nset.insert(*m);
++            }
++          }
++
++          reachUnder.push_front(n);
++          nset.insert(n);
++          region = cyclicRegionType(n, reachUnder);
++
++          if(NULL != region)
++          {
++            reduce(region, nset);
++            changed = true;
++
++            if(nset.find(entry) != nset.end())
++              entry = region;
++          }
++          else
++          {
++            post_ctr++;
++          }
++        }
++      }
++
++      if(!changed)
++      {
++        break;
++      }
++
++    } while(post_order.size()>1);
++
++  }
++
++  void ControlTree::analyze()
++  {
++    initializeNodes();
++    structuralAnalysis(nodes_entry);
++  }
++}
+diff --git a/backend/src/ir/structural_analysis.hpp b/backend/src/ir/structural_analysis.hpp
+new file mode 100644
+index 0000000..c23d0d5
+--- /dev/null
++++ b/backend/src/ir/structural_analysis.hpp
+@@ -0,0 +1,279 @@
++#ifndef __STRUCTURAL_ANALYSIS_HPP__
++#define __STRUCTURAL_ANALYSIS_HPP__
++
++#include "ir/unit.hpp"
++#include "ir/function.hpp"
++#include "ir/instruction.hpp"
++
++#include <iostream>
++#include <unordered_set>
++#include <unordered_map>
++#include <vector>
++#include <map>
++#include <list>
++#include <algorithm>
++
++namespace analysis
++{
++  using namespace std;
++  using namespace gbe;
++
++  enum RegionType
++  {
++    BasicBlock = 0,
++    Block,
++    IfThen,
++    IfElse,
++    SelfLoop,
++    WhileLoop,
++    NaturalLoop
++  } ;
++
++  /* control tree virtual node */
++  class Node;
++
++  typedef unordered_set<Node *> NodeSet;
++  typedef list<Node *> NodeList;
++  typedef std::vector<Node *> NodeVector;
++
++  /* control tree virtual node */
++  class Node
++  {
++  public:
++    Node(RegionType rtype, const NodeList& children): has_barrier(false)
++    {
++      this->rtype = rtype;
++      this->children = children;
++    }
++    virtual ~Node() {}
++    NodeSet& preds() { return pred; }
++    NodeSet& succs() { return succ; }
++    Node*& fallthrough() { return fall_through; }
++    bool& hasBarrier() { return has_barrier; }
++    RegionType type() { return rtype; }
++    virtual ir::BasicBlock* getEntry() { return NULL; };
++    virtual ir::BasicBlock* getExit() { return NULL; };
++
++  public:
++    RegionType rtype;
++    NodeSet pred;
++    NodeSet succ;
++    NodeList children;
++    Node* fall_through;
++    bool has_barrier;
++  };
++
++  /* represents basic block */
++  class BasicBlockNode : public Node
++  {
++  public:
++    BasicBlockNode(ir::BasicBlock *p_bb) : Node(BasicBlock, NodeList()) { this->p_bb = p_bb; }
++    virtual ~BasicBlockNode() {}
++    ir::BasicBlock* getBasicBlock() { return p_bb; }
++    virtual ir::BasicBlock* getEntry() { return p_bb; }
++    virtual ir::BasicBlock* getExit() { return p_bb; }
++
++  private:
++    ir::BasicBlock *p_bb;
++  };
++
++  /* a sequence of nodes */
++  class BlockNode : public Node
++  {
++  public:
++    BlockNode(NodeList& children) : Node(Block, children) {}
++    virtual ~BlockNode(){}
++    virtual ir::BasicBlock *getEntry()
++    {
++      NodeList::const_iterator it = children.begin();
++      while((*it)->type() != BasicBlock)
++        it = (*it)->children.begin();
++      return (*it)->getEntry();
++    }
++    virtual ir::BasicBlock *getExit()
++    {
++      NodeList::const_iterator it = children.end();
++      it--;
++      while((*it)->type() != BasicBlock)
++      {
++        it = (*it)->children.end();
++        it--;
++      }
++      return (*it)->getExit();
++    }
++  };
++
++  /* If-Then structure node */
++  class IfThenNode : public Node
++  {
++  public:
++    IfThenNode(Node* cond, Node* ifTrue) : Node(IfThen, BuildChildren(cond, ifTrue)) {}
++    virtual ~IfThenNode() {}
++    virtual ir::BasicBlock* getEntry()
++    {
++      NodeList::const_iterator it = children.begin();
++      while((*it)->type() != BasicBlock)
++        it = (*it)->children.begin();
++      return (*it)->getEntry();
++    }
++    virtual ir::BasicBlock* getExit()
++    {
++      NodeList::const_iterator it = children.end();
++      it--;
++      while((*it)->type() != BasicBlock)
++      {
++        it = (*it)->children.end();
++        it--;
++      }
++      return (*it)->getExit();
++    }
++
++  private:
++    const NodeList BuildChildren(Node* cond, Node* ifTrue)
++    {
++      NodeList children;
++      children.push_back(cond);
++      children.push_back(ifTrue);
++      return children;
++    }
++  };
++
++  /* If-Else structure node */
++  class IfElseNode : public Node
++  {
++  public:
++    IfElseNode(Node* cond, Node* ifTrue, Node* ifFalse) : Node(IfElse, BuildChildren(cond, ifTrue, ifFalse)) {}
++    virtual ~IfElseNode() {}
++    virtual ir::BasicBlock* getEntry()
++    {
++      NodeList::const_iterator it = children.begin();
++      while((*it)->type() != BasicBlock)
++        it = (*it)->children.begin();
++      return (*it)->getEntry();
++    }
++    virtual ir::BasicBlock* getExit()
++    {
++      NodeList::const_iterator it = children.begin();
++      while((*it)->type() != BasicBlock)
++      {
++        it = (*it)->children.end();
++        it--;
++      }
++      return (*it)->getExit();
++    }
++
++  private:
++    const NodeList BuildChildren(Node* cond, Node* ifTrue, Node* ifFalse)
++    {
++      NodeList children;
++      children.push_back(cond);
++      children.push_back(ifTrue);
++      children.push_back(ifFalse);
++      return children;
++    }
++  };
++
++  /* Self loop structure node */
++  class SelfLoopNode : public Node
++  {
++  public:
++    SelfLoopNode(Node* node) : Node(SelfLoop, BuildChildren(node)) {}
++    virtual ~SelfLoopNode() {}
++    virtual ir::BasicBlock* getEntry()
++    {
++      return (*(children.begin()))->getEntry();
++    }
++    virtual ir::BasicBlock* getExit()
++    {
++      return (*(children.begin()))->getExit();
++    }
++
++  private:
++    const NodeList BuildChildren(Node *node)
++    {
++      NodeList children;
++      children.push_back(node);
++      return children;
++    }
++  };
++
++  /* While loop structure node */
++  class WhileLoopNode : public Node
++  {
++  public:
++    WhileLoopNode(Node* cond, Node* execute) : Node(WhileLoop, BuildChildren(cond, execute)) {}
++    virtual ~WhileLoopNode() {}
++    virtual ir::BasicBlock* getEntry()
++    {
++      return (*(children.begin()))->getEntry();
++    }
++    virtual ir::BasicBlock* getExit()
++    {
++      return (*(children.begin()))->getExit();
++    }
++
++  private:
++    const NodeList BuildChildren(Node* cond, Node* execute)
++    {
++      NodeList children;
++      children.push_back(cond);
++      children.push_back(execute);
++      return children;
++    }
++
++  };
++
++  /* Natural loop structure node */
++  class NaturalLoopNode : public Node
++  {
++  public:
++    NaturalLoopNode(const NodeList& children): Node(NaturalLoop, children){}
++    virtual ~NaturalLoopNode() {}
++    virtual ir::BasicBlock* getEntry()
++    {
++      //TODO implement it
++      return NULL;
++    }
++    virtual ir::BasicBlock* getExit()
++    {
++      //TODO implement it
++      return NULL;
++    }
++  };
++
++  /* computes the control tree, and do the structure transform during the computation */
++  class ControlTree
++  {
++  public:
++    void analyze();
++
++    ControlTree(ir::Function* fn) { this->fn = fn; }
++    ~ControlTree();
++
++  private:
++    void initializeNodes();
++    Node* insertNode(Node *);
++    void structuralAnalysis(Node * entry);
++    void DFSPostOrder(Node *start);
++    bool path(Node *, Node *, Node *notthrough = NULL);
++    void reduce(Node* node,  NodeSet nodeSet);
++    void compact(Node* node,  NodeSet nodeSet);
++    Node* getNodesEntry() const  { return nodes_entry;}
++    Node* acyclicRegionType(Node*, NodeSet&);
++    Node* cyclicRegionType(Node*, NodeList&);
++    bool isCyclic(Node*);
++    bool isBackedge(const Node*, const Node*);
++    bool pathBack(Node*, Node*);
++    bool checkForBarrier(const ir::BasicBlock*);
++
++  private:
++    NodeVector nodes;
++    Node* nodes_entry;
++    unordered_map<ir::BasicBlock *, Node *> bbmap;
++    NodeList post_order;
++    NodeSet visited;
++    NodeList::iterator post_ctr;
++    ir::Function *fn;
++  };
++}
++#endif
+diff --git a/backend/src/llvm/llvm_to_gen.cpp b/backend/src/llvm/llvm_to_gen.cpp
+index 37a5b2b..4e27935 100644
+--- a/backend/src/llvm/llvm_to_gen.cpp
++++ b/backend/src/llvm/llvm_to_gen.cpp
+@@ -60,6 +60,8 @@
+ #include "llvm/llvm_to_gen.hpp"
+ #include "sys/cvar.hpp"
+ #include "sys/platform.hpp"
++#include "ir/unit.hpp"
++#include "ir/structural_analysis.hpp"
+ 
+ #include <sys/types.h>
+ #include <sys/stat.h>
+@@ -223,6 +225,18 @@ namespace gbe
+ #endif
+     passes.run(mod);
+ 
++#ifdef TRANSFORM_UNSTRUCTURE
++    const ir::Unit::FunctionSet& fs = unit.getFunctionSet();
++    ir::Unit::FunctionSet::const_iterator iter = fs.begin();
++    while(iter != fs.end())
++    {
++      analysis::ControlTree *ct = new analysis::ControlTree(iter->second);
++      ct->analyze();
++      delete ct;
++      iter++;
++    }
++#endif
++
+     return true;
+   }
+ } /* namespace gbe */
+-- 
+1.8.3.2
+

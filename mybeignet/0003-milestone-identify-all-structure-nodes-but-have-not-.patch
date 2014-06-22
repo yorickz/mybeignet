@@ -1,0 +1,725 @@
+From ec7b30f2648eaa39bffc6bbbfb2db1c72f2289a6 Mon Sep 17 00:00:00 2001
+From: Yongjia Zhang <zhang_yong_jia@126.com>
+Date: Wed, 7 May 2014 23:19:02 +0800
+Subject: [PATCH 3/3] milestone identify all structure nodes, but have not done
+ any thing int the backend except the IfThen structures
+
+---
+ backend/src/backend/gen_context.cpp         |   1 -
+ backend/src/ir/function.hpp                 |   1 +
+ backend/src/ir/unstructure_to_structure.cpp | 278 ++++++++++++++++++++++------
+ backend/src/ir/unstructure_to_structure.hpp |  93 +++++++++-
+ backend/src/llvm/llvm_to_gen.cpp            |  17 +-
+ 5 files changed, 319 insertions(+), 71 deletions(-)
+
+diff --git a/backend/src/backend/gen_context.cpp b/backend/src/backend/gen_context.cpp
+index 3b4ee01..62b58bd 100644
+--- a/backend/src/backend/gen_context.cpp
++++ b/backend/src/backend/gen_context.cpp
+@@ -2022,7 +2022,6 @@ namespace gbe
+     if (this->patchBranches() == false)
+       return false;
+     genKernel->insnNum = p->store.size();
+-    std::cout<<"instruction number"<<genKernel->insnNum<<std::endl;
+     genKernel->insns = GBE_NEW_ARRAY_NO_ARG(GenInstruction, genKernel->insnNum);
+     std::memcpy(genKernel->insns, &p->store[0], genKernel->insnNum * sizeof(GenInstruction));
+     if (OCL_OUTPUT_ASM) {
+diff --git a/backend/src/ir/function.hpp b/backend/src/ir/function.hpp
+index c9bbe01..acd3f0d 100644
+--- a/backend/src/ir/function.hpp
++++ b/backend/src/ir/function.hpp
+@@ -83,6 +83,7 @@ namespace ir {
+     }
+ 
+     set <Register> undefPhiRegs;
++  //these three are used by structure transforming
+   public:
+     bool needEndif;
+     bool needIf;
+diff --git a/backend/src/ir/unstructure_to_structure.cpp b/backend/src/ir/unstructure_to_structure.cpp
+index b4ac8ff..426cddc 100644
+--- a/backend/src/ir/unstructure_to_structure.cpp
++++ b/backend/src/ir/unstructure_to_structure.cpp
+@@ -3,6 +3,24 @@
+ namespace analysis
+ {
+   int allcounter=-1;
++  int ifthencounter = 0;
++  int ifelsecounter = 0;
++  int selfloopcounter = 0;
++  int forloopcounter = 0;
++  int dowhileloopcounter = 0;
++
++  ControlTree::~ControlTree()
++  {
++    NodeVector::iterator iter = nodes.begin();
++    NodeVector::iterator iterend = nodes.end();
++    while(iter != iterend)
++    {
++      delete *iter;
++      iter++;
++    }  
++  }
++
++
+   Node* ControlTree::InsertNode(Node *p_node)
+   {
+     nodes.push_back(p_node);
+@@ -10,23 +28,6 @@ namespace analysis
+     allcounter--;
+     return p_node;
+   }
+-/*  
+-  void ControlTree::MarkStructuredBasicBlocks(Node *node)
+-  {
+-    if(node->Type() == BasicBlock)
+-    {
+-      ir::BasicBlock* bb = ((BasicBlockNode *)node)->GetBasicBlock();
+-      bb->belongToStructure = true;
+-      return;
+-    }
+-    NodeList::iterator it = node->children.begin();
+-    while(it != node->children.end())
+-    {
+-      MarkStructuredNodes(*it);
+-      it++;
+-    }
+-  }
+-*/
+ 
+   void ControlTree::MarkNeedIf(Node *node, bool status)
+   {
+@@ -73,20 +74,54 @@ namespace analysis
+     }
+   }
+ 
++  bool ControlTree::CheckForBarrier(const ir::BasicBlock* bb)
++  {
++    ir::BasicBlock::const_iterator iter = bb->begin();
++    ir::BasicBlock::const_iterator iterend = bb->end();
++    while(iter != iterend)
++    {
++      if((*iter).getOpcode() == ir::OP_SYNC)
++        return true;
++      iter++;
++    }
++
++    return false;
++  }
++
++
+   void ControlTree::InitializeNodes()
+   {
+       //getTopBlock returns reference of BasicBlock
+       ir::BasicBlock& tmp_bb = fn->getTopBlock();
+       ir::BasicBlock* p_tmp_bb = &tmp_bb;
++      Node* p = NULL;
++
++      if(NULL != p_tmp_bb)
++      {
++        Node *p_tmp_node = new BasicBlockNode(p_tmp_bb);
++        if(CheckForBarrier(p_tmp_bb))
++          p_tmp_node->hasBarrier = true;
++        nodes.push_back(p_tmp_node);
++        bbmap[p_tmp_bb] = p_tmp_node;
++        p_tmp_bb = p_tmp_bb->getNextBlock();
++        p = p_tmp_node;
++      }
++
+       while(p_tmp_bb != NULL)
+       {
+         Node *p_tmp_node = new BasicBlockNode(p_tmp_bb);
++        if(CheckForBarrier(p_tmp_bb))
++          p_tmp_node->hasBarrier = true;
++        p->Fallthrough() = p_tmp_node;
++        p = p_tmp_node;
+         nodes.push_back(p_tmp_node);
+         bbmap[p_tmp_bb] = p_tmp_node;
+         p_tmp_bb = p_tmp_bb->getNextBlock();
+-       // p_tmp_node->Fallthrough() = p_tmp_bb;
+       }
+ 
++      if(NULL != p)
++        p->Fallthrough() = NULL;
++
+       p_tmp_bb = &tmp_bb;
+ 
+       this->nodes_entry = bbmap[p_tmp_bb];
+@@ -154,7 +189,10 @@ namespace analysis
+ 
+   bool ControlTree::IsCyclic(Node* node)
+   {
+-    if(node->Type() == NaturalLoop || node->Type() == WhileLoop)
++    if(node->Type() == NaturalLoop ||
++       node->Type() == ForLoop ||
++       node->Type() == DoWhileLoop ||
++       node->Type() == SelfLoop) 
+       return true;
+ 
+     return false;
+@@ -174,6 +212,22 @@ namespace analysis
+   }
+ 
+ 
++  bool ControlTree::PathBack(Node* m, Node* n)
++  {
++    for(NodeSet::const_iterator k = n->Preds().begin(); k!= n->Preds().end(); k++)
++    {
++      if(IsBackedge(*k, n))
++      {
++        visited.clear();
++        if(Path(m, *k, n))
++          return true;  
++      }
++    }
++
++    return false;
++  }
++
++
+   Node* ControlTree::AcyclicRegionType(Node* node, NodeSet& nset)
+   {
+     nset.clear();
+@@ -236,7 +290,18 @@ namespace analysis
+ 
+                 std::cout<<"label:"<<(*it)->privatecounter<<std::endl;
+       }*/
+-      return InsertNode(new BlockNode(nodes));
++      Node* p = new BlockNode(nodes);
++      NodeList::const_iterator iter = nodes.begin();
++      while(iter != nodes.end())
++      {
++        if((*iter)->canBeHandled == false)
++        {
++          p->canBeHandled = false;
++          break;
++        }
++        iter++;  
++      }
++      return InsertNode(p);
+     }
+     
+     else if(node->Succs().size() == 2)//nodes.size() == 1
+@@ -244,9 +309,11 @@ namespace analysis
+       Node *m;
+       m = *(node->Succs().begin());
+       n = *(++(node->Succs().begin()));
+-
+       //check for if node then n
+-      if(n->Succs().size() == 1 && n->Preds().size() == 1 && *(n->Succs().begin()) == m)
++      if(n->Succs().size() == 1 && 
++         n->Preds().size() == 1 &&
++         *(n->Succs().begin()) == m &&
++         !n->hasBarrier)
+       {
+ 
+         nset.clear();
+@@ -264,12 +331,19 @@ namespace analysis
+         else
+                 thenn = n->privatecounter;
+         std::cout<<"IF "<<ifff<<" then "<<thenn<<std::endl;*/
+-        return InsertNode(new IfThenNode(node, n));
++        ifthencounter++;
++        Node* p = new IfThenNode(node, n);
++        if(node->canBeHandled == false || n->canBeHandled == false)
++          p->canBeHandled = false; 
++        return InsertNode(p);
+       }
+       
+       //check for if node then m
+       
+-      if(m->Succs().size() == 1 && m->Preds().size() == 1 && *(m->Succs().begin()) == n)//FIXME may be this could merge with the upper one.
++      if(m->Succs().size() == 1 &&
++         m->Preds().size() == 1 &&
++         *(m->Succs().begin()) == n &&
++         !m->hasBarrier)//FIXME may be this could merge with the upper one.
+       {
+         nset.clear();
+         nset.insert(node);
+@@ -286,34 +360,54 @@ namespace analysis
+         else
+                 thenn = m->privatecounter;
+         std::cout<<"IF "<<ifff<<" then "<<thenn<<std::endl;*/
+-        return InsertNode(new IfThenNode(node, m));
++        ifthencounter++;
++        Node* p = new IfThenNode(node, m);
++        if(node->canBeHandled == false || m->canBeHandled == false)
++          p->canBeHandled = false;
++        return InsertNode(p);
+       }
+ 
+       //check for if node then n else m 
+-/*      if(m->Succs().size() == 1 && n->Succs().size() == 1 && 
++      if(m->Succs().size() == 1 && n->Succs().size() == 1 && 
+          m->Preds().size() == 1 && n->Preds().size() == 1 &&
+          *(m->Succs().begin()) == *(n->Succs().begin()) &&
+-         node->Fallthrough() == n)
++         node->Fallthrough() == n && !m->hasBarrier && !n->hasBarrier)
+       {
+         nset.clear();
+         nset.insert(node);
+         nset.insert(n);
+         nset.insert(m);
+-        return InsertNode(new IfElseNode(node, n, m));
++
++        ifelsecounter++;
++        Node* p = new IfElseNode(node, n, m);
++        if(node->canBeHandled == false ||
++           m->canBeHandled == false ||
++           n->canBeHandled == false)
++          p->canBeHandled = false;
++        p->canBeHandled = false;
++        return InsertNode(p);
+       }
+ 
+       //check for if node then m else n
+       if(m->Succs().size() == 1 && n->Succs().size() == 1 &&
+          m->Preds().size() == 1 && n->Preds().size() == 1 &&
+          *(m->Succs().begin()) == *(n->Succs().begin()) &&
+-         node->Fallthrough() == m)
++         node->Fallthrough() == m && !m->hasBarrier && !n->hasBarrier) 
+       {
+         nset.clear();
+         nset.insert(node);
+         nset.insert(m);
+         nset.insert(n);
+-        return InsertNode(new IfElseNode(node, m, n));
+-      }*/
++
++        ifelsecounter++;
++        Node* p = new IfElseNode(node, m, n);
++        if(node->canBeHandled == false ||
++           m->canBeHandled == false ||
++           n->canBeHandled == false)
++          p->canBeHandled = false;
++        p->canBeHandled = false;
++        return InsertNode(p);
++      }
+ 
+     }
+     return NULL;
+@@ -345,33 +439,77 @@ namespace analysis
+ 
+   Node * ControlTree::CyclicRegionType(Node *node, NodeList &nset)
+   {
+-#if 0
++#if 1
+     if(nset.size() == 1)
+     {
+       if(node->Succs().find(node) != node->Succs().end())
+-        return InsertNode(new NaturalNode(NodeList(1, node)));
++      {
++        //std::cout<<"<>Found SelfLoop"<<std::endl;
++        selfloopcounter++;
++        Node* p = new SelfLoopNode(node);
++        if(node->canBeHandled == false)
++          p->canBeHandled = false;
++        p->canBeHandled = false;
++        return InsertNode(p);
++      }
+       else
+         return NULL;
+     }
+ 
+-    for(NodeList::const_iterator m = nset.begin(); m! = nset.end(); ++m)
++    for(NodeList::const_iterator m = nset.begin(); m != nset.end(); ++m)
+     {
+-      visit.clear();
++      visited.clear();
+       if(!Path(node, *m))
++      {
++        std::cout<<"<>Found an Improper region"<<std::endl;
+         return NULL;
++      }
+     }
+ 
++    //try to identify for loop and do-while loop;
++
+     NodeList::iterator m;
+-    for(m = nset.begin(); m!=nset.end(); ++m)
++    for(m = nset.begin(); m != nset.end(); ++m)
++    {
++      if(*m == node)
++        continue;
++      if(node->Succs().size() == 2 && (*m)->Succs().size() == 1 &&
++         node->Preds().size() == 2 && (*m)->Preds().size() == 1)
++      {
++       // std::cout<<"<>Found ForLoop"<<std::endl;
++        forloopcounter++;
++        Node* p = new ForLoopNode(node, *m);
++        if(node->canBeHandled == false || (*m)->canBeHandled == false)
++          p->canBeHandled = false;
++        p->canBeHandled = false;
++        return InsertNode(p);
++      }
++
++      if(node->Succs().size() == 2 && (*m)->Succs().size() == 1 &&
++         node->Preds().size() == 1 && (*m)->Preds().size() == 2)
++      {
++        //std::cout<<"<>Found DoWhileLoop"<<std::endl;
++        dowhileloopcounter++;
++        Node* p = new DoWhileLoopNode(*m, node);
++        if(node->canBeHandled == false || (*m)->canBeHandled == false)
++          p->canBeHandled = false;
++        p->canBeHandled = false;
++        return InsertNode(p);
++      }
++    }
++
++    //try to identify nature loop
++   /* for(m = nset.begin(); m != nset.end(); ++m)
+     {
+       if(*m == node && (*m)->Preds().size() != 2)
+         break;
++
+       if(*m != node && (*m)->Preds().size() != 1)
+         break;
+     }
+ 
+     if(m != nset.end())
+-      rendleturn InsertNode(new NaturalNode(nset));
++      return InsertNode(new NaturalNode(nset));*/
+ #endif
+     return NULL;
+   }
+@@ -445,7 +583,7 @@ namespace analysis
+          node->Fallthrough() = *s;
+      }
+     }
+-#if 0
++#if 1
+     if(!IsCyclic(node))
+     {
+       for(n = nodeSet.begin(); n != nodeSet.end(); n++)
+@@ -457,7 +595,7 @@ namespace analysis
+           if(nodeSet.find(*p) == nodeSet.end())
+             continue;
+ 
+-          if(IsBackedge(Edge(*p, *n)))
++          if(IsBackedge(*p, *n))
+           {
+             node->Preds().insert(node);
+             node->Succs().insert(node);
+@@ -472,6 +610,7 @@ namespace analysis
+       }
+     }
+ #endif
++
+     Compact(node, nodeSet);
+   }
+ 
+@@ -497,7 +636,6 @@ namespace analysis
+ 
+   void ControlTree::StructuralAnalysis(Node *entry)
+   {
+-
+     Node* n;
+     NodeSet nset;
+     NodeList reachUnder;
+@@ -514,6 +652,7 @@ namespace analysis
+ 
+       while(post_order.size() > 1 && post_ctr != post_order.end())
+       {
++        //std::cout<<"POST_ORDER>SIZE "<<post_order.size()<<std::endl;
+         n = *post_ctr;
+         Node* region = AcyclicRegionType(n, nset);
+         
+@@ -532,7 +671,35 @@ namespace analysis
+         }
+         else
+         {
+-          post_ctr++;
++          reachUnder.clear();
++          nset.clear();
++          for(NodeList::const_iterator m = post_order.begin(); m != post_order.end(); m++)
++          {
++            if(*m != n && PathBack(*m, n))
++            {
++              reachUnder.push_front(*m);
++              nset.insert(*m);
++            }
++          }
++
++          reachUnder.push_front(n);
++          nset.insert(n);
++          region = CyclicRegionType(n, reachUnder);
++
++          if(NULL != region)
++          {
++            Reduce(region, nset);
++            changed = true;
++
++            if(nset.find(entry) != nset.end())
++            {
++              entry = region;
++            }
++          }
++          else
++          {
++            post_ctr++;
++          }
+         }
+       }
+ 
+@@ -542,7 +709,6 @@ namespace analysis
+       }
+     } while(post_order.size()>1);
+ 
+-    std::cout<<"Found Structure If-Then Count :"<<foundStructureCount<<std::endl;
+   }
+ 
+ 
+@@ -558,7 +724,7 @@ namespace analysis
+     {
+       if((*it)->Type() == IfThen)
+       {
+-        if(false == (*it)->mark)
++        if(false == (*it)->mark && (*it)->canBeHandled)
+         {
+           MarkStructuredNodes(*it);
+           MarkNeedEndif(*it, false);
+@@ -579,17 +745,20 @@ namespace analysis
+     it = begin;
+     while(it != end)
+     {
+-      switch((*it)->Type())
++      if((*it)->canBeHandled)
+       {
+-        case IfThen:
+-          NodeList::iterator child_iter = (*it)->children.end();
+-          ir::LabelIndex endiflabel;
+-          child_iter--;
+-          HandleThenNodeWithoutElse(*child_iter, endiflabel);
+-          child_iter--;
+-          HandleIfNode(*child_iter, endiflabel);
+-          break;
++        switch((*it)->Type())
++        {
++          case IfThen:
++            NodeList::iterator child_iter = (*it)->children.end();
++            ir::LabelIndex endiflabel;
++            child_iter--;
++            HandleThenNodeWithoutElse(*child_iter, endiflabel);
++            child_iter--;
++            HandleIfNode(*child_iter, endiflabel);
++            break;
+         
++        }
+       }
+       it++;
+     }
+@@ -600,5 +769,10 @@ namespace analysis
+     InitializeNodes();
+     StructuralAnalysis(nodes_entry);
+     HandleStructuredNodes();
++    std::cout<<"IfThen : "<<ifthencounter<<std::endl;
++    std::cout<<"IfElse : "<<ifelsecounter<<std::endl;
++    std::cout<<"SelfLoop : "<<selfloopcounter<<std::endl;
++    std::cout<<"ForLoop : "<<forloopcounter<<std::endl;
++    std::cout<<"DoWhileLoop : "<<dowhileloopcounter<<std::endl;
+   }
+ }
+diff --git a/backend/src/ir/unstructure_to_structure.hpp b/backend/src/ir/unstructure_to_structure.hpp
+index 6da362b..8e25a7e 100644
+--- a/backend/src/ir/unstructure_to_structure.hpp
++++ b/backend/src/ir/unstructure_to_structure.hpp
+@@ -21,11 +21,13 @@ namespace analysis
+     Block,
+     IfThen,
+     IfElse,
+-    WhileLoop,
++    SelfLoop,
++    ForLoop,
++    DoWhileLoop,
+     NaturalLoop
+   } ;
+  
+-  //control tree base class
++  //control tree node  base class
+   class Node;
+ 
+   typedef unordered_set<Node *> NodeSet;
+@@ -35,7 +37,7 @@ namespace analysis
+   class Node
+   {
+   public:
+-    Node(RegionType rtype, const NodeList& children):mark(false)
++    Node(RegionType rtype, const NodeList& children): hasBarrier(false), mark(false), canBeHandled(true)
+     {
+       this->rtype = rtype;
+       this->children = children;
+@@ -44,19 +46,21 @@ namespace analysis
+     NodeSet& Succs() { return succs; }
+     Node*& Fallthrough() { return fallthrough; }
+     RegionType Type() { return rtype; }
+-   // Node &GetLastBaseNode();//TODO  implement it
++    //Node &GetLastBaseNode();//TODO  implement it
+     virtual ir::BasicBlock* GetEntry() {return NULL;};
+     virtual ir::BasicBlock* GetExit() {return NULL;};
+ 
+   public:
+     int privatecounter;
+- //   static int allcounter=0;
++    //static int allcounter=0;
+     RegionType rtype;
+     NodeSet preds;
+     NodeSet succs;
+     NodeList children;
+     Node* fallthrough;
++    bool hasBarrier;
+     bool mark;
++    bool canBeHandled;
+   };
+  
+   class BasicBlockNode : public Node
+@@ -160,14 +164,80 @@ namespace analysis
+       return children;
+     }
+   };
+-  class WhileLoopNode : public Node
++
++  class SelfLoopNode : public Node
+   {
+-  
++  public:
++    SelfLoopNode(Node* node) : Node(SelfLoop, BuildChildren(node)) {}
++    virtual ir::BasicBlock* GetEntry()
++    {
++      return (*(children.begin()))->GetEntry();
++    }
++    virtual ir::BasicBlock* GetExit()
++    {
++      return (*(children.begin()))->GetExit();
++    }
++  private:
++    const NodeList BuildChildren(Node *node)
++    {
++      NodeList children;
++      children.push_back(node);
++      return children;
++    }
+   };
+ 
+-  class NatrualLoopNode : public Node
++  class ForLoopNode : public Node
+   {
+-  
++  public:
++    ForLoopNode(Node* cond, Node* execute) : Node(ForLoop, BuildChildren(cond, execute)){}
++    virtual ir::BasicBlock* GetEntry()
++    {
++      return (*(children.begin()))->GetEntry();
++    }
++    virtual ir::BasicBlock* GetExit()
++    {
++      return (*(children.begin()))->GetExit();
++    }
++  private:
++    const NodeList BuildChildren(Node* cond, Node* execute)
++    {
++      NodeList children;
++      children.push_back(cond);
++      children.push_back(execute);
++      return children;
++    }
++    
++  };
++
++
++  class DoWhileLoopNode : public Node
++  {
++  public:
++    DoWhileLoopNode(Node* execute, Node* cond) : Node(DoWhileLoop, BuildChildren(execute, cond)){}
++    virtual ir::BasicBlock* GetEntry()
++    {
++      return (*(children.begin()))->GetEntry();
++    }  
++    virtual ir::BasicBlock* GetExit()
++    {
++      NodeList::const_iterator it = children.end();
++      it--;
++      return (*it)->GetExit();
++    }
++  private:
++    const NodeList BuildChildren(Node* execute, Node* cond)
++    {
++      NodeList children;
++      children.push_back(execute);
++      children.push_back(cond);
++      return children;
++    }
++  };
++
++  class NaturalLoopNode : public Node
++  {
++  public:
++    NaturalLoopNode(const NodeList& children): Node(NaturalLoop, children){}
+   };
+ 
+   class ControlTree
+@@ -176,6 +246,7 @@ namespace analysis
+     void Analyze();
+     
+     ControlTree(ir::Function* fn){ this->fn = fn; }
++    ~ControlTree();
+   private:
+     void InitializeNodes();
+     Node* InsertNode(Node *);
+@@ -189,15 +260,17 @@ namespace analysis
+     void Compact(Node* node,  NodeSet nodeSet);
+     Node* GetNodesEntry() const  { return nodes_entry;}
+     //if found any acyclic region, then this function would create aproprate Node object, and then insert the node, and returns the node just inserted
+-    Node* AcyclicRegionType(Node* node, NodeSet& nset);
++    Node* AcyclicRegionType(Node*, NodeSet&);
+     Node* CyclicRegionType(Node*, NodeList&);
+     void MarkStructuredNodes(Node *); 
+     void MarkNeedEndif(Node *, bool);
+     void MarkNeedIf(Node *, bool);
+     bool IsCyclic(Node*);
+     bool IsBackedge(const Node*, const Node*);
++    bool PathBack(Node*, Node*);
+    // void MarkStructuredBasicBlocks(Node *);
+     void HandleStructuredNodes();
++    bool CheckForBarrier(const ir::BasicBlock*);
+     NodeVector nodes;
+     Node* nodes_entry;
+     unordered_map<ir::BasicBlock *, Node *> bbmap;
+diff --git a/backend/src/llvm/llvm_to_gen.cpp b/backend/src/llvm/llvm_to_gen.cpp
+index 5946dc4..bb29f04 100644
+--- a/backend/src/llvm/llvm_to_gen.cpp
++++ b/backend/src/llvm/llvm_to_gen.cpp
+@@ -73,6 +73,7 @@ namespace gbe
+   BVAR(OCL_OUTPUT_CFG, false);
+   BVAR(OCL_OUTPUT_CFG_ONLY, false);
+   BVAR(OCL_OUTPUT_LLVM_BEFORE_EXTRA_PASS, false);
++  BVAR(OCL_TRANSFORM_UNSTRUCTURE, false);
+   using namespace llvm;
+ 
+   void runFuntionPass(Module &mod, TargetLibraryInfo *libraryInfo)
+@@ -227,15 +228,15 @@ namespace gbe
+     const ir::Unit::FunctionSet& fs = unit.getFunctionSet();
+     ir::Unit::FunctionSet::const_iterator it = fs.begin();
+ 
+-
+-    while(it != fs.end())
++    if(OCL_TRANSFORM_UNSTRUCTURE)
+     {
+-      analysis::ControlTree *ct = new analysis::ControlTree(it->second);
+-     // if(it->first == "abc")
+-      { std::cout<<"Function Name "<<it->first<<std::endl;
+-              ct->Analyze();}
+-      delete ct;
+-      it++;
++      while(it != fs.end())
++      {
++        analysis::ControlTree *ct = new analysis::ControlTree(it->second);
++        ct->Analyze();
++        delete ct;
++        it++;
++      }
+     }
+     return true;
+   }
+-- 
+1.8.3.2
+

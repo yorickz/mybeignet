@@ -1,0 +1,306 @@
+From c1be9a7ac4a15c675f6d9f8b65fd442538ade91b Mon Sep 17 00:00:00 2001
+From: Yongjia Zhang <zhang_yong_jia@126.com>
+Date: Sat, 21 Jun 2014 19:05:32 +0800
+Subject: [PATCH] Fix the same kernel name issue of OCL_OUTPUT_KERNEL_PERF
+
+Now it treats kernels with same kernel name and different build
+options separately. When OCL_OUTPUT_KERNEL_PERF==1, it outputs the
+time summary as before, but if OCL_OUTPUT_KERNEL_PERF==2, it will
+output the time details including the kernel build options and
+kernels with same kernel name but different build options will
+output separately.
+
+Signed-off-by: Yongjia Zhang <yongjia.zhang@intel.com>
+---
+ src/cl_api.c      | 17 ++++++----
+ src/performance.c | 95 +++++++++++++++++++++++++++++++++++++++----------------
+ src/performance.h |  2 +-
+ 3 files changed, 79 insertions(+), 35 deletions(-)
+
+diff --git a/src/cl_api.c b/src/cl_api.c
+index 6206e10..8856f5f 100644
+--- a/src/cl_api.c
++++ b/src/cl_api.c
+@@ -1681,7 +1681,7 @@ clEnqueueCopyBuffer(cl_command_queue     command_queue,
+   }
+ 
+   if(b_output_kernel_perf)
+-	  time_end(command_queue->ctx, "beignet internal kernel : cl_mem_copy", command_queue);
++	  time_end(command_queue->ctx, "beignet internal kernel : cl_mem_copy", "\0", command_queue);
+ 
+   return 0;
+ 
+@@ -1785,7 +1785,7 @@ clEnqueueCopyBufferRect(cl_command_queue     command_queue,
+   }
+ 
+   if(b_output_kernel_perf)
+-    time_end(command_queue->ctx, "beignet internal kernel : cl_mem_copy_buffer_rect", command_queue);
++    time_end(command_queue->ctx, "beignet internal kernel : cl_mem_copy_buffer_rect", "\0", command_queue);
+ 
+ error:
+   return err;
+@@ -2027,7 +2027,7 @@ clEnqueueCopyImage(cl_command_queue      command_queue,
+   }
+ 
+   if(b_output_kernel_perf)
+-    time_end(command_queue->ctx, "beignet internal kernel : cl_mem_kernel_copy_image", command_queue);
++    time_end(command_queue->ctx, "beignet internal kernel : cl_mem_kernel_copy_image", "\0", command_queue);
+ 
+ error:
+   return err;
+@@ -2091,7 +2091,7 @@ clEnqueueCopyImageToBuffer(cl_command_queue  command_queue,
+   }
+ 
+   if(b_output_kernel_perf)
+-    time_end(command_queue->ctx, "beignet internal kernel : cl_mem_copy_image_to_buffer", command_queue);
++    time_end(command_queue->ctx, "beignet internal kernel : cl_mem_copy_image_to_buffer", "\0", command_queue);
+ 
+ error:
+   return err;
+@@ -2155,7 +2155,7 @@ clEnqueueCopyBufferToImage(cl_command_queue  command_queue,
+   }
+ 
+   if(b_output_kernel_perf)
+-    time_end(command_queue->ctx, "beignet internal kernel : cl_mem_copy_buffer_to_image", command_queue);
++    time_end(command_queue->ctx, "beignet internal kernel : cl_mem_copy_buffer_to_image", "\0", command_queue);
+ 
+ error:
+   return err;
+@@ -2556,7 +2556,12 @@ clEnqueueNDRangeKernel(cl_command_queue  command_queue,
+   }
+ 
+   if(b_output_kernel_perf)
+-    time_end(command_queue->ctx, cl_kernel_get_name(kernel), command_queue);
++  {
++    if(kernel->program->build_opts != NULL)
++      time_end(command_queue->ctx, cl_kernel_get_name(kernel), kernel->program->build_opts, command_queue);
++    else
++      time_end(command_queue->ctx, cl_kernel_get_name(kernel), "\0", command_queue);
++  }
+ error:
+   return err;
+ }
+diff --git a/src/performance.c b/src/performance.c
+index a785460..e095e02 100644
+--- a/src/performance.c
++++ b/src/performance.c
+@@ -8,11 +8,12 @@
+ 
+ #define MAX_KERNEL_NAME_LENGTH 100
+ #define MAX_KERNEL_EXECUTION_COUNT 100000
+-
++#define MAX_KERNEL_BUILD_OPT 1000
+ typedef struct kernel_storage_node
+ {
+   char kernel_name[MAX_KERNEL_NAME_LENGTH];
+   float kernel_times[MAX_KERNEL_EXECUTION_COUNT];
++  char build_option[MAX_KERNEL_BUILD_OPT];
+   int current_count;
+   float kernel_sum_time;
+   struct kernel_storage_node *next;
+@@ -81,11 +82,12 @@ static context_storage_node * find_context(cl_context context)
+   return pre;
+ }
+ 
+-static kernel_storage_node * find_kernel(context_storage_node *p_context, const char *kernel_name)
++static kernel_storage_node * find_kernel(context_storage_node *p_context, const char *kernel_name, const char *build_opt)
+ {
+   if(NULL != prev_kernel_pointer && NULL != prev_context_pointer &&
+      p_context == prev_context_pointer &&
+-     !strcmp(kernel_name, prev_kernel_pointer->kernel_name))
++     !strcmp(kernel_name, prev_kernel_pointer->kernel_name) &&
++     !strcmp(build_opt, prev_kernel_pointer->build_option))
+     return prev_kernel_pointer;
+ 
+   if(NULL == p_context)
+@@ -96,22 +98,23 @@ static kernel_storage_node * find_kernel(context_storage_node *p_context, const
+     p_context->kernels_storage = (kernel_storage_node *)malloc(sizeof(kernel_storage_node));
+     p_context->kernel_count++;
+     strcpy(p_context->kernels_storage->kernel_name,kernel_name);
++    strcpy(p_context->kernels_storage->build_option, build_opt);
+     p_context->kernels_storage->current_count = 0;
+     p_context->kernels_storage->kernel_sum_time = 0.0f;
+     p_context->kernels_storage->next = NULL;
+     return p_context->kernels_storage;
+   }
++
+   kernel_storage_node *pre = p_context->kernels_storage;
+   kernel_storage_node *cur = p_context->kernels_storage;
+-  while(NULL != cur && strcmp(cur->kernel_name, kernel_name))
++  while(NULL != cur && (strcmp(cur->kernel_name, kernel_name) || strcmp(cur->build_option, build_opt)))
+   {
+     pre = cur;
+     cur = cur->next;
+   }
+   if(NULL != cur)
+-  {
+     return cur;
+-  }
++
+   p_context->kernel_count++;
+   pre->next = (kernel_storage_node *)malloc(sizeof(kernel_storage_node));
+   pre = pre->next;
+@@ -119,6 +122,7 @@ static kernel_storage_node * find_kernel(context_storage_node *p_context, const
+   pre->kernel_sum_time = 0.0f;
+   pre->next = NULL;
+   strcpy(pre->kernel_name, kernel_name);
++  strcpy(pre->build_option, build_opt);
+   return pre;
+ }
+ 
+@@ -146,6 +150,8 @@ typedef struct time_element
+   float kernel_sum_time;
+   int kernel_execute_count;
+   double dev;
++  float kernel_times[MAX_KERNEL_EXECUTION_COUNT];
++  uint32_t time_index;
+ } time_element;
+ 
+ static int cmp(const void *a, const void *b)
+@@ -172,40 +178,61 @@ static void print_time_info()
+   {
+     printf("[------------ CONTEXT %4d ------------]\n", tmp_context_id++);
+     printf("  ->>>> KERNELS TIME SUMMARY <<<<-\n");
++
+     kernel_storage_node *p_kernel = p_context->kernels_storage;
+     kernel_storage_node *p_tmp_kernel = p_kernel;
+     time_element *te = (time_element *)malloc(sizeof(time_element)*p_context->kernel_count);
+-    int i = 0, j = 0;
++    memset(te, 0, sizeof(time_element)*p_context->kernel_count);
++    int i = -1, j = 0, k = 0;
+     while(NULL != p_tmp_kernel)
+     {
+-      te[i].kernel_execute_count = p_tmp_kernel->current_count;
+-      strcpy(te[i].kernel_name, p_tmp_kernel->kernel_name);
+-      te[i].kernel_sum_time = p_tmp_kernel->kernel_sum_time;
+-      float average = p_tmp_kernel->kernel_sum_time / p_tmp_kernel->current_count;
+-      float sumsquare = 0.0f;
++      for(k=0; k<=i; k++)
++      {
++        if(!strcmp(te[k].kernel_name, p_tmp_kernel->kernel_name))
++          break;
++      }
++      if(k == i+1)
++      {
++        i++;
++        k = i;
++      }
++      te[k].kernel_execute_count += p_tmp_kernel->current_count;
++      strcpy(te[k].kernel_name, p_tmp_kernel->kernel_name);
++      te[k].kernel_sum_time += p_tmp_kernel->kernel_sum_time;
+       for(j=0; j != p_tmp_kernel->current_count; ++j)
+-        sumsquare += pow((p_tmp_kernel->kernel_times[j] - average), 2.0 );
+-      te[i++].dev = sqrt(sumsquare/p_tmp_kernel->current_count);
++        te[k].kernel_times[te[k].time_index++] = p_tmp_kernel->kernel_times[j];
+       p_tmp_kernel = p_tmp_kernel->next;
+     }
++
++    for(k=0; k<=i; k++)
++    {
++      float average = te[k].kernel_sum_time / te[k].kernel_execute_count;
++      double sumsquare = 0.0;
++      for(j=0; j<te[k].time_index; ++j)
++        sumsquare += pow((te[k].kernel_times[j] - average), 2.0);
++      te[k].dev = sqrt(sumsquare / te[k].kernel_execute_count);
++    }
++
+     float sum_time = 0.0f;
+     qsort((void *)te, p_context->kernel_count, sizeof(time_element), cmp);
+-    for(i=0; i<p_context->kernel_count; ++i)
+-      sum_time += te[i].kernel_sum_time;
+-    for(i=0; i<p_context->kernel_count; ++i)
++    for(j=0; j<=i; ++j)
++      sum_time += te[j].kernel_sum_time;
++
++    for(j=0; j<=i; ++j)
+     {
+-      printf("    [Kernel Name: %-30s Time(ms): (%4.1f%%) %9.2f  Count: %-7d  Ave(ms): %7.2f  Dev: %.1lf%%] \n",
+-             te[i].kernel_name,
+-             te[i].kernel_sum_time / sum_time * 100,
+-             te[i].kernel_sum_time,
+-             te[i].kernel_execute_count,
+-             te[i].kernel_sum_time / te[i].kernel_execute_count,
+-             te[i].dev / te[i].kernel_sum_time * te[i].kernel_execute_count * 100);
++      printf("    [Kernel Name: %-30s Time(ms): (%4.1f%%) %9.2f  Count: %-7d  Ave(ms): %7.2f  Dev: %.1lf%%]\n",
++             te[j].kernel_name,
++             te[j].kernel_sum_time / sum_time * 100,
++             te[j].kernel_sum_time,
++             te[j].kernel_execute_count,
++             te[j].kernel_sum_time / te[j].kernel_execute_count,
++             te[j].dev / te[j].kernel_sum_time * te[j].kernel_execute_count * 100);
+     }
+     free(te);
+     printf("    Total : %.2f\n", sum_time);
+     if(2 != b_output_kernel_perf)
+     {
++      printf("[------------  CONTEXT ENDS------------]\n\n");
+       p_context = p_context->next;
+       continue;
+     }
+@@ -214,6 +241,18 @@ static void print_time_info()
+     while(NULL != p_kernel)
+     {
+       printf("    [Kernel Name : %30s   Time(ms): %.2f]\n", p_kernel->kernel_name, p_kernel->kernel_sum_time);
++      if(*p_kernel->build_option != '\0')
++      {
++        int count = 0;
++        printf("      ->Build Options : ");
++        while(p_kernel->build_option[count] != '\0' )
++        {
++          printf("%c", p_kernel->build_option[count++]);
++          if(count % 100 == 0)
++            printf("\n                         ");
++        }
++        printf("\n");
++      }
+       for(i=0; i!=p_kernel->current_count; ++i)
+         printf("      Execution Round%5d : %.2f (ms)\n", i+1, p_kernel->kernel_times[i]);
+       p_kernel = p_kernel->next;
+@@ -225,7 +264,7 @@ static void print_time_info()
+ }
+ 
+ 
+-static void insert(cl_context context, const char *kernel_name, float time)
++static void insert(cl_context context, const char *kernel_name, const char *build_opt, float time)
+ {
+   if(!atexit_registered)
+   {
+@@ -233,7 +272,7 @@ static void insert(cl_context context, const char *kernel_name, float time)
+     atexit(print_time_info);
+   }
+   context_storage_node *p_context = find_context(context);
+-  kernel_storage_node *p_kernel = find_kernel(p_context, kernel_name);
++  kernel_storage_node *p_kernel = find_kernel(p_context, kernel_name, build_opt);
+   prev_context_pointer = p_context;
+   prev_kernel_pointer = p_kernel;
+   p_kernel->kernel_times[p_kernel->current_count++] = time;
+@@ -267,11 +306,11 @@ void time_start(cl_context context, const char * kernel_name, cl_command_queue c
+   gettimeofday(&start, NULL);
+ }
+ 
+-void time_end(cl_context context, const char * kernel_name, cl_command_queue cq)
++void time_end(cl_context context, const char * kernel_name, const char * build_opt, cl_command_queue cq)
+ {
+   clFinish(cq);
+   gettimeofday(&end, NULL);
+   float t = (end.tv_sec - start.tv_sec)*1000 + (end.tv_usec - start.tv_usec)/1000.0f;
+-  insert(context, kernel_name, t);
++  insert(context, kernel_name, build_opt, t);
+   pthread_mutex_unlock(&mutex);
+ }
+diff --git a/src/performance.h b/src/performance.h
+index c747743..1e75054 100644
+--- a/src/performance.h
++++ b/src/performance.h
+@@ -5,7 +5,7 @@
+ 
+ extern int b_output_kernel_perf;
+ void time_start(cl_context context, const char * kernel_name, cl_command_queue cq);
+-void time_end(cl_context context, const char * kernel_name, cl_command_queue cq);
++void time_end(cl_context context, const char * kernel_name, const char * build_opt, cl_command_queue cq);
+ void initialize_env_var();
+ 
+ 
+-- 
+1.8.3.2
+

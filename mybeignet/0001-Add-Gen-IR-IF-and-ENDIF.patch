@@ -1,0 +1,84 @@
+From 09660e9011f4b47acc079cad7b077ab2053ce48d Mon Sep 17 00:00:00 2001
+From: Yongjia Zhang <zhang_yong_jia@126.com>
+Date: Thu, 8 May 2014 18:21:37 +0800
+Subject: [PATCH 1/3] Add Gen IR 'IF' and 'ENDIF'
+
+Add these two Gen IRs to mark structured basic blocks for future
+structure analysis.
+
+Signed-off-by: Yongjia Zhang <yongjia.zhang@intel.com>
+---
+ backend/src/ir/instruction.cpp | 16 +++++++++++++---
+ backend/src/ir/instruction.hpp |  4 ++++
+ backend/src/ir/instruction.hxx |  2 ++
+ 3 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/backend/src/ir/instruction.cpp b/backend/src/ir/instruction.cpp
+index 2d2b34b..de53f6d 100644
+--- a/backend/src/ir/instruction.cpp
++++ b/backend/src/ir/instruction.cpp
+@@ -345,7 +345,7 @@ namespace ir {
+     {
+     public:
+       INLINE BranchInstruction(Opcode op, LabelIndex labelIndex, Register predicate) {
+-        GBE_ASSERT(op == OP_BRA);
++        GBE_ASSERT(op == OP_BRA || op == OP_IF);
+         this->opcode = op;
+         this->predicate = predicate;
+         this->labelIndex = labelIndex;
+@@ -353,8 +353,8 @@ namespace ir {
+         this->hasLabel = true;
+       }
+       INLINE BranchInstruction(Opcode op, LabelIndex labelIndex) {
+-        GBE_ASSERT(op == OP_BRA);
+-        this->opcode = OP_BRA;
++        GBE_ASSERT(op == OP_BRA || op == OP_ENDIF);
++        this->opcode = op;
+         this->labelIndex = labelIndex;
+         this->hasPredicate = false;
+         this->hasLabel = true;
+@@ -1600,6 +1600,16 @@ DECL_MEM_FN(GetImageInfoInstruction, const uint8_t, getImageIndex(void), getImag
+     return internal::BranchInstruction(OP_BRA, labelIndex, pred).convert();
+   }
+ 
++  // IF
++  Instruction IF(LabelIndex labelIndex, Register pred) {
++    return internal::BranchInstruction(OP_IF, labelIndex, pred).convert();
++  }
++
++  // ENDIF
++  Instruction ENDIF(LabelIndex labelIndex) {
++    return internal::BranchInstruction(OP_ENDIF, labelIndex).convert();
++  }
++
+   // RET
+   Instruction RET(void) {
+     return internal::BranchInstruction(OP_RET).convert();
+diff --git a/backend/src/ir/instruction.hpp b/backend/src/ir/instruction.hpp
+index 582e22d..d5031d2 100644
+--- a/backend/src/ir/instruction.hpp
++++ b/backend/src/ir/instruction.hpp
+@@ -651,6 +651,10 @@ namespace ir {
+   Instruction BRA(LabelIndex labelIndex);
+   /*! (pred) bra labelIndex */
+   Instruction BRA(LabelIndex labelIndex, Register pred);
++  /*! (pred) if labelIndex */
++  Instruction IF(LabelIndex labelIndex, Register pred);
++  /*! endif labelIndex(marks the label of this endif itself) */
++  Instruction ENDIF(LabelIndex labelIndex);
+   /*! ret */
+   Instruction RET(void);
+   /*! load.type.space {dst1,...,dst_valueNum} offset value */
+diff --git a/backend/src/ir/instruction.hxx b/backend/src/ir/instruction.hxx
+index 587517b..8083085 100644
+--- a/backend/src/ir/instruction.hxx
++++ b/backend/src/ir/instruction.hxx
+@@ -93,3 +93,5 @@ DECL_INSN(UPSAMPLE_INT, BinaryInstruction)
+ DECL_INSN(UPSAMPLE_LONG, BinaryInstruction)
+ DECL_INSN(I64MADSAT, TernaryInstruction)
+ DECL_INSN(MAD, TernaryInstruction)
++DECL_INSN(IF, BranchInstruction)
++DECL_INSN(ENDIF, BranchInstruction)
+-- 
+1.8.3.2
+

@@ -1,0 +1,349 @@
+kernel void abc ( global int* src, unsigned int src_offset,                                     global int* dst, unsigned int dst_offset,				     unsigned int size,				     unsigned int first_mask, unsigned int last_mask,				     unsigned int shift, unsigned int dw_mask, int src_less){    int i = get_global_id(0);    unsigned int tmp = 0;    if (i > size -1)        return;    volatile int x=9, y=7, z=5;    if (i == 0) {        tmp =x;    } else if (  src_less&&i==size-1) {         tmp = y;    } else {        tmp = z;    }    if (i == 0) {        dst[dst_offset] =2;    } else if (i == size - 1) {        dst[i+dst_offset] =1;    } else {        dst[i+dst_offset] = tmp;    }}
+.decl_function abc
+## 72 registers ##
+.decl.dword %0 local_id_0
+.decl.dword %1 local_id_1
+.decl.dword %2 local_id_2
+.decl.dword %3 group_id_0
+.decl.dword %4 group_id_1
+.decl.dword %5 group_id_2
+.decl.dword %6 num_groups_0
+.decl.dword %7 num_groups_1
+.decl.dword %8 num_groups_2
+.decl.dword %9 local_size_0
+.decl.dword %10 local_size_1
+.decl.dword %11 local_size_2
+.decl.dword %12 global_size_0
+.decl.dword %13 global_size_1
+.decl.dword %14 global_size_2
+.decl.dword %15 global_offset_0
+.decl.dword %16 global_offset_1
+.decl.dword %17 global_offset_2
+.decl.dword %18 stack_pointer
+.decl.dword %19 stack_buffer
+.decl.dword %20 block_ip
+.decl.dword %21 barrier_id
+.decl.dword %22 thread_number
+.decl.dword %23 work_dimension
+.decl.dword %24 zero
+.decl.dword %25 one
+.decl.dword %26 retVal
+.decl.dword %27
+.decl.dword %28
+.decl.dword %29
+.decl.dword %30
+.decl.dword %31
+.decl.dword %32
+.decl.dword %33
+.decl.dword %34
+.decl.dword %35
+.decl.dword %36
+.decl.dword %37
+.decl.dword %38
+.decl.dword %39
+.decl.dword %40
+.decl.dword %41
+.decl.dword %42
+.decl.dword %43
+.decl.bool %44
+.decl.bool %45
+.decl.bool %46
+.decl.bool %47
+.decl.bool %48
+.decl.dword %49
+.decl.dword %50
+.decl.dword %51
+.decl.dword %52
+.decl.dword %53
+.decl.dword %54
+.decl.dword %55
+.decl.dword %56
+.decl.dword %57
+.decl.dword %58
+.decl.dword %59
+.decl.dword %60
+.decl.dword %61
+.decl.dword %62
+.decl.dword %63
+.decl.dword %64
+.decl.dword %65
+.decl.dword %66
+.decl.dword %67
+.decl.dword %68
+.decl.dword %69
+.decl.dword %70
+.decl.dword %71
+## 10 input registers ##
+decl_input.global %27 src
+decl_input.value %28 src_offset
+decl_input.global %29 dst
+decl_input.value %30 dst_offset
+decl_input.value %31 size
+decl_input.value %32 first_mask
+decl_input.value %33 last_mask
+decl_input.value %34 shift
+decl_input.value %35 dw_mask
+decl_input.value %36 src_less
+## 0 output register ##
+## 0 pushed register
+## 13 blocks ##
+LABEL $0
+MOV.int32 %37 %18
+LOADI.int32 %59 4
+ADD.int32 %18 %18 %59
+MOV.int32 %38 %18
+ADD.int32 %18 %18 %59
+MOV.int32 %39 %18
+ADD.int32 %18 %18 %59
+MUL.int32 %40 %3 %9
+ADD.int32 %41 %40 %0
+ADD.int32 %42 %41 %15
+LOADI.int32 %62 -1
+ADD.int32 %43 %31 %62
+GT.uin32 %44 %42 %43
+IF<%44> -> label$20
+
+LABEL $1
+LOADI.int32 %63 9
+STORE.int32.private.aligned %37 {%63}
+LOADI.int32 %64 7
+STORE.int32.private.aligned %38 {%64}
+LOADI.int32 %65 5
+STORE.int32.private.aligned %39 {%65}
+LOADI.int32 %66 0
+EQ.int32 %45 %42 %66
+IF<%45> -> label$19
+
+LABEL $2
+LOADI.int32 %67 0
+NE.int32 %46 %36 %67
+EQ.int32 %47 %42 %43
+AND.bool %48 %46 %47
+IF<%48> -> label$17
+
+LABEL $3
+BRA -> label$5
+
+LABEL $4
+ELSE -> label$16
+LOAD.int32.private.aligned {%49} %38
+MOV.int32 %55 %49
+ENDIF -> label$16
+BRA -> label$7
+
+LABEL $5
+LOAD.int32.private.aligned {%50} %39
+MOV.int32 %55 %50
+BRA -> label$4
+
+LABEL $6
+ELSE -> label$18
+LOAD.int32.private.aligned {%51} %37
+LOADI.int32 %68 4
+MUL.int32 %52 %68 %30
+ADD.int32 %53 %29 %52
+LOADI.int32 %69 2
+STORE.int32.global.aligned %53 {%69}
+ENDIF -> label$18
+ENDIF -> label$20
+BRA -> label$11
+
+LABEL $7
+MOV.int32 %54 %55
+ADD.int32 %56 %42 %30
+LOADI.int32 %70 4
+MUL.int32 %57 %70 %56
+ADD.int32 %58 %29 %57
+IF<%47> -> label$15
+
+LABEL $8
+BRA -> label$10
+
+LABEL $9
+ELSE -> label$14
+LOADI.int32 %71 1
+STORE.int32.global.aligned %58 {%71}
+ENDIF -> label$14
+BRA -> label$6
+
+LABEL $10
+STORE.int32.global.aligned %58 {%54}
+BRA -> label$9
+
+LABEL $11
+BRA -> label$12
+
+LABEL $12
+RET
+
+.end_function
+
+47 !!!it is->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+47 !!!it is->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+## register allocation ##
+%0       g4  .0  D  64B	[  0        -> 9       ]
+%1       g6  .0  D  64B	[  0        -> 0       ]
+%2       g8  .0  D  64B	[  0        -> 0       ]
+%3       g0  .1  D  4B	[  0        -> -2147483647]
+%4       g0  .6  D  4B	[  2147483647 -> -2147483647]
+%5       g0  .7  D  4B	[  2147483647 -> -2147483647]
+%9       g10 .5  D  4B	[  0        -> 8       ]
+%15      g10 .6  D  4B	[  0        -> 10      ]
+%18      g12 .0  D  64B	[  0        -> 7       ]
+%19      g1  .2  D  4B	[  0        -> 0       ]
+%20      g2  .0  D  64B	[  0        -> 79      ]
+%21      g0  .2  D  4B	[  2147483647 -> -2147483647]
+%24      g1  .0  D  4B	[  0        -> 25      ]
+%25      g1  .1  D  4B	[  0        -> 25      ]
+%27      g1  .3  D  4B	[  0        -> 0       ]
+%28      g1  .4  D  4B	[  0        -> 0       ]
+%29      g1  .5  D  4B	[  0        -> 61      ]
+%30      g1  .6  D  4B	[  0        -> 59      ]
+%31      g1  .7  D  4B	[  0        -> 11      ]
+%32      g10 .0  D  4B	[  0        -> 0       ]
+%33      g10 .1  D  4B	[  0        -> 0       ]
+%34      g10 .2  D  4B	[  0        -> 0       ]
+%35      g10 .3  D  4B	[  0        -> 0       ]
+%36      g10 .4  D  4B	[  0        -> 24      ]
+%37      g124.0  D  64B	[  3        -> 22      ]
+%38      g120.0  D  64B	[  5        -> 33      ]
+%39      g116.0  D  64B	[  7        -> 39      ]
+%40      g114.0  D  64B	[  8        -> 9       ]
+%41      g112.0  D  64B	[  9        -> 10      ]
+%42      g114.0  D  64B	[  10       -> 59      ]
+%43      g112.0  D  64B	[  11       -> 25      ]
+%44      g111.0  b  32B	[  12       -> 13      ]
+%45      g127.0  b  32B	[  21       -> 22      ]
+%46      g127.0  b  32B	[  24       -> 26      ]
+%47      g126.0  b  32B	[  25       -> 62      ]
+%48      g125.0  b  32B	[  26       -> 27      ]
+%49      g124.0  D  64B	[  33       -> 34      ]
+%50      g124.0  D  64B	[  39       -> 40      ]
+%52      g124.0  D  64B	[  45       -> 46      ]
+%53      g118.0  D  64B	[  46       -> 48      ]
+%54      g120.0  D  64B	[  58       -> 74      ]
+%55      g122.0  D  64B	[  34       -> 58      ]
+%56      g124.0  D  64B	[  59       -> 60      ]
+%57      g122.0  D  64B	[  60       -> 61      ]
+%58      g114.0  D  64B	[  61       -> 74      ]
+%63      g126.0  D  64B	[  15       -> 16      ]
+%64      g122.0  D  64B	[  17       -> 18      ]
+%65      g118.0  D  64B	[  19       -> 20      ]
+%69      g120.0  D  64B	[  47       -> 48      ]
+%71      g116.0  D  64B	[  68       -> 69      ]
+%72      g118.0  D  64B	[  74       -> 74      ]
+
+abc's disassemble begin:
+  L0:
+    (0       )  mov(16)         g2<1>UW         0xffffUW                        { align1 WE_all 1H };
+    (2       )  mov(16)         g2<1>UW         0x0UW                           { align1 WE_normal 1H };
+    (4       )  mov(1)          g1<1>UW         0x0UW                           { align1 WE_normal };
+    (6       )  mov(1)          g1.2<1>UW       -1W                             { align1 WE_normal };
+    (8       )  and(1)          g126<1>UD       g0.5<0,1,0>UD   0x1ffUD         { align1 WE_normal };
+    (10      )  shl(16)         g12<1>UD        g12<8,8,1>UD    0xaUD           { align1 WE_normal 1H };
+    (11      )  shl(1)          g126<1>UD       g126<0,1,0>UD   0xeUD           { align1 WE_normal };
+    (13      )  add(16)         g12<1>UD        g12<8,8,1>UD    g1.2<0,1,0>UD   { align1 WE_normal 1H };
+    (14      )  add(16)         g12<1>UD        g12<8,8,1>UD    g126<0,1,0>UD   { align1 WE_normal 1H };
+    (15      )  cmp.le(16)      null            g2<8,8,1>UW     0x0UW           { align1 WE_all 1H };
+    (16      )  (+f0) if(16) 88                                                 { align1 WE_normal 1H };
+    (18      )  mov(16)         g124<1>F        g12<8,8,1>F                     { align1 WE_normal 1H };
+    (19      )  add(16)         g12<1>D         g12<8,8,1>D     4D              { align1 WE_normal 1H };
+    (20      )  mov(16)         g120<1>F        g12<8,8,1>F                     { align1 WE_normal 1H };
+    (21      )  add(16)         g12<1>D         g12<8,8,1>D     4D              { align1 WE_normal 1H };
+    (22      )  mov(16)         g116<1>F        g12<8,8,1>F                     { align1 WE_normal 1H };
+    (23      )  mul(16)         g114<1>D        g0.1<0,1,0>D    g10.5<0,1,0>UD  { align1 WE_normal 1H };
+    (25      )  add(16)         g112<1>D        g114<8,8,1>D    g4<8,8,1>D      { align1 WE_normal 1H };
+    (26      )  add(16)         g114<1>D        g112<8,8,1>D    g10.6<0,1,0>D   { align1 WE_normal 1H };
+    (27      )  add(16)         g112<1>D        g1.7<0,1,0>D    -1D             { align1 WE_normal 1H };
+    (29      )  cmp.g(8)        null            g114<8,8,1>UD   g112<8,8,1>UD   { align1 WE_normal 1Q };
+    (31      )  cmp.g(8)        null            g115<8,8,1>UD   g113<8,8,1>UD   { align1 WE_normal 2Q };
+    (33      )  (+f0) sel(16)   g111<1>UW       g1.2<0,1,0>UW   g1<0,1,0>UW     { align1 WE_normal 1H };
+    (35      )  (-f0) if(16) 65                                                 { align1 WE_normal 1H };
+  L1:
+    (37      )  mov(16)         g126<1>F        1.26117e-44F                    { align1 WE_normal 1H };
+    (39      )  send(16)        null            g124<8,8,1>UD
+                data (bti: 1, rgba: 14, SIMD16, legacy, Untyped Surface Write) mlen 4 rlen 0 { align1 WE_normal 1H };
+    (41      )  mov(16)         g122<1>F        9.80909e-45F                    { align1 WE_normal 1H };
+    (43      )  send(16)        null            g120<8,8,1>UD
+                data (bti: 1, rgba: 14, SIMD16, legacy, Untyped Surface Write) mlen 4 rlen 0 { align1 WE_normal 1H };
+    (45      )  mov(16)         g118<1>F        7.00649e-45F                    { align1 WE_normal 1H };
+    (47      )  send(16)        null            g116<8,8,1>UD
+                data (bti: 1, rgba: 14, SIMD16, legacy, Untyped Surface Write) mlen 4 rlen 0 { align1 WE_normal 1H };
+    (49      )  cmp.e(8)        null            g114<8,8,1>D    0D              { align1 WE_normal 1Q };
+    (51      )  cmp.e(8)        null            g115<8,8,1>D    0D              { align1 WE_normal 2Q };
+    (53      )  (+f0) sel(16)   g127<1>UW       g1.2<0,1,0>UW   g1<0,1,0>UW     { align1 WE_normal 1H };
+    (55      )  (-f0) if(16) 36                                                 { align1 WE_normal 1H };
+  L2:
+    (57      )  cmp.ne(8)       null            g10.4<0,1,0>D   0D              { align1 WE_normal 1Q };
+    (59      )  cmp.ne(8)       null            g10.4<0,1,0>D   0D              { align1 WE_normal 2Q };
+    (61      )  (+f0) sel(16)   g127<1>UW       g1.2<0,1,0>UW   g1<0,1,0>UW     { align1 WE_normal 1H };
+    (63      )  cmp.e.f1.1(8)   null            g114<8,8,1>D    g112<8,8,1>D    { align1 WE_normal 1Q };
+    (65      )  cmp.e.f1.1(8)   null            g115<8,8,1>D    g113<8,8,1>D    { align1 WE_normal 2Q };
+    (67      )  (+f1.1) sel(16) g126<1>UW       g1.2<0,1,0>UW   g1<0,1,0>UW     { align1 WE_normal 1H };
+    (69      )  and.ne.f1.0(16) g125<1>UW       g127<8,8,1>UW   g126<8,8,1>UW   { align1 WE_normal 1H };
+    (71      )  (-f1) if(16) 6                                                  { align1 WE_normal 1H };
+  L3:
+    (73      )  jmpi(1) 9                                                       { align1 WE_all };
+  L4:
+    (75      )  else(16) 5                      null                            { align1 WE_normal 1H };
+    (77      )  send(16)        g124<1>UW       g120<8,8,1>UD
+                data (bti: 0, rgba: 14, SIMD16, legacy, Untyped Surface Read) mlen 2 rlen 2 { align1 WE_normal 1H };
+    (79      )  mov(16)         g122<1>F        g124<8,8,1>F                    { align1 WE_normal 1H };
+    (80      )  endif(16) 2                     null                            { align1 WE_normal 1H };
+    (82      )  jmpi(1) 24                                                      { align1 WE_all };
+  L5:
+    (84      )  send(16)        g124<1>UW       g116<8,8,1>UD
+                data (bti: 0, rgba: 14, SIMD16, legacy, Untyped Surface Read) mlen 2 rlen 2 { align1 WE_normal 1H };
+    (86      )  mov(16)         g122<1>F        g124<8,8,1>F                    { align1 WE_normal 1H };
+    (87      )  jmpi(1) -14                                                     { align1 WE_all };
+  L6:
+    (89      )  else(16) 9                      null                            { align1 WE_normal 1H };
+    (91      )  mul(16)         g124<1>D        g1.6<0,1,0>D    4W              { align1 WE_normal 1H };
+    (93      )  add(16)         g118<1>D        g1.5<0,1,0>D    g124<8,8,1>D    { align1 WE_normal 1H };
+    (94      )  mov(16)         g120<1>F        2.8026e-45F                     { align1 WE_normal 1H };
+    (96      )  send(16)        null            g118<8,8,1>UD
+                data (bti: 1, rgba: 14, SIMD16, legacy, Untyped Surface Write) mlen 4 rlen 0 { align1 WE_normal 1H };
+    (98      )  endif(16) 2                     null                            { align1 WE_normal 1H };
+    (100     )  endif(16) 2                     null                            { align1 WE_normal 1H };
+    (102     )  mov(16)         g2<1>UW         0xbUW                           { align1 WE_normal 1H };
+    (104     )  endif(16) 2                     null                            { align1 WE_normal 1H };
+    (106     )  jmpi(1) 24                                                      { align1 WE_all };
+  L7:
+    (108     )  mov(16)         g120<1>F        g122<8,8,1>F                    { align1 WE_normal 1H };
+    (109     )  add(16)         g124<1>D        g114<8,8,1>D    g1.6<0,1,0>D    { align1 WE_normal 1H };
+    (110     )  mul(16)         g122<1>D        g124<8,8,1>D    4W              { align1 WE_normal 1H };
+    (112     )  add(16)         g114<1>D        g1.5<0,1,0>D    g122<8,8,1>D    { align1 WE_normal 1H };
+    (113     )  (-f0) if(16) 6                                                  { align1 WE_normal 1H };
+  L8:
+    (115     )  jmpi(1) 10                                                      { align1 WE_all };
+  L9:
+    (117     )  else(16) 6                      null                            { align1 WE_normal 1H };
+    (119     )  mov(16)         g116<1>F        1.4013e-45F                     { align1 WE_normal 1H };
+    (121     )  send(16)        null            g114<8,8,1>UD
+                data (bti: 1, rgba: 14, SIMD16, legacy, Untyped Surface Write) mlen 4 rlen 0 { align1 WE_normal 1H };
+    (123     )  endif(16) 2                     null                            { align1 WE_normal 1H };
+    (125     )  jmpi(1) -38                                                     { align1 WE_all };
+  L10:
+    (127     )  mov(16)         g118<1>F        g114<8,8,1>F                    { align1 WE_normal 1H };
+    (128     )  send(16)        null            g118<8,8,1>UD
+                data (bti: 1, rgba: 14, SIMD16, legacy, Untyped Surface Write) mlen 4 rlen 0 { align1 WE_normal 1H };
+    (130     )  jmpi(1) -15                                                     { align1 WE_all };
+  L11:
+    (132     )  cmp.le(16)      null            g2<8,8,1>UW     0xbUW           { align1 WE_all 1H };
+    (133     )  (+f0) if(16) 4                                                  { align1 WE_normal 1H };
+    (135     )  mov(16)         g2<1>UW         0xcUW                           { align1 WE_normal 1H };
+    (137     )  endif(16) 2                     null                            { align1 WE_normal 1H };
+  L12:
+    (139     )  mov(16)         g112<1>UD       g0<8,8,1>UD                     { align1 WE_all 1H };
+    (140     )  send(8)         null            g112<8,8,1>UD
+                thread_spawnerunsupported target 7 mlen 1 rlen 0 { align1 WE_normal 1Q EOT };
+    (142     )  nop                                                             ;
+    (144     )  nop                                                             ;
+    (146     )  nop                                                             ;
+    (148     )  nop                                                             ;
+    (150     )  nop                                                             ;
+    (152     )  nop                                                             ;
+    (154     )  nop                                                             ;
+    (156     )  nop                                                             ;
+abc's disassemble end.
+buildinfo 

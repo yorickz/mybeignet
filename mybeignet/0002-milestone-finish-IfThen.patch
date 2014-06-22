@@ -1,0 +1,803 @@
+From 9b0f0d78e2494987250af47b63261ad3b0ebf81b Mon Sep 17 00:00:00 2001
+From: Yongjia Zhang <zhang_yong_jia@126.com>
+Date: Sun, 4 May 2014 16:51:50 +0800
+Subject: [PATCH 2/3] milestone   finish IfThen
+
+---
+ backend/src/backend/gen_context.cpp         |   1 +
+ backend/src/backend/gen_encoder.cpp         |   7 +-
+ backend/src/backend/gen_insn_selection.cpp  |  82 ++++++++----
+ backend/src/ir/function.hpp                 |   5 +-
+ backend/src/ir/instruction.cpp              |   1 -
+ backend/src/ir/unstructure_to_structure.cpp | 191 ++++++++++++----------------
+ backend/src/ir/unstructure_to_structure.hpp |  43 ++++++-
+ backend/src/llvm/llvm_to_gen.cpp            |   6 +-
+ 8 files changed, 189 insertions(+), 147 deletions(-)
+
+diff --git a/backend/src/backend/gen_context.cpp b/backend/src/backend/gen_context.cpp
+index 62b58bd..3b4ee01 100644
+--- a/backend/src/backend/gen_context.cpp
++++ b/backend/src/backend/gen_context.cpp
+@@ -2022,6 +2022,7 @@ namespace gbe
+     if (this->patchBranches() == false)
+       return false;
+     genKernel->insnNum = p->store.size();
++    std::cout<<"instruction number"<<genKernel->insnNum<<std::endl;
+     genKernel->insns = GBE_NEW_ARRAY_NO_ARG(GenInstruction, genKernel->insnNum);
+     std::memcpy(genKernel->insns, &p->store[0], genKernel->insnNum * sizeof(GenInstruction));
+     if (OCL_OUTPUT_ASM) {
+diff --git a/backend/src/backend/gen_encoder.cpp b/backend/src/backend/gen_encoder.cpp
+index e850eeb..a3aceea 100644
+--- a/backend/src/backend/gen_encoder.cpp
++++ b/backend/src/backend/gen_encoder.cpp
+@@ -868,7 +868,10 @@ namespace gbe
+   void GenEncoder::OP(GenRegister dest, GenRegister src0, GenRegister src1, GenRegister src2) { \
+     alu3(this, GEN_OPCODE_##OP, dest, src0, src1, src2); \
+   }
+-
++  void GenEncoder::SEL(GenRegister dest, GenRegister src0, GenRegister src1) {
++  
++    alu2(this, GEN_OPCODE_SEL, dest, src0, src1, 0);
++  }
+   void GenEncoder::LOAD_DF_IMM(GenRegister dest, GenRegister tmp, double value) {
+     union { double d; unsigned u[2]; } u;
+     u.d = value;
+@@ -983,7 +986,7 @@ namespace gbe
+   ALU1(FBL)
+   ALU1(F16TO32)
+   ALU1(F32TO16)
+-  ALU2(SEL)
++ // ALU2(SEL)
+   ALU1(NOT)
+   ALU2_MOD(AND)
+   ALU2_MOD(OR)
+diff --git a/backend/src/backend/gen_insn_selection.cpp b/backend/src/backend/gen_insn_selection.cpp
+index 780e3c5..32c4d91 100644
+--- a/backend/src/backend/gen_insn_selection.cpp
++++ b/backend/src/backend/gen_insn_selection.cpp
+@@ -434,7 +434,7 @@ namespace gbe
+     ALU1(RNDE)
+     ALU1(F16TO32)
+     ALU1(F32TO16)
+-    ALU2(SEL)
++   // ALU2(SEL)
+     ALU2(SEL_INT64)
+     ALU1(NOT)
+     ALU2(AND)
+@@ -480,6 +480,10 @@ namespace gbe
+ #undef I64Shift
+     /*! Convert 64-bit integer to 32-bit float */
+     void CONVI64_TO_F(Reg dst, Reg src, GenRegister tmp[6]);
++    void SEL(Reg dst, Reg src0, Reg src1)
++    {
++      ALU2(SEL_OP_SEL, dst, src0, src1);
++    }
+     /*! Convert 64-bit integer to 32-bit float */
+     void CONVF_TO_I64(Reg dst, Reg src, GenRegister tmp[2]);
+     /*! Saturated 64bit x*y + z */
+@@ -509,7 +513,7 @@ namespace gbe
+     /*! IF indexed instruction */
+     void IF(Reg src, ir::LabelIndex jip, ir::LabelIndex uip);
+     /*! ENDIF indexed instruction */
+-    void ENDIF(Reg src, ir::LabelIndex jip);
++    void ENDIF(Reg src, ir::LabelIndex jip, ir::LabelIndex endifLabel = ir::LabelIndex(0));
+     /*! BRD indexed instruction */
+     void BRD(Reg src, ir::LabelIndex jip);
+     /*! BRC indexed instruction */
+@@ -978,8 +982,11 @@ namespace gbe
+     insn->index1 = uint16_t(uip);
+   }
+ 
+-  void Selection::Opaque::ENDIF(Reg src, ir::LabelIndex jip) {
+-    this->block->endifLabel = this->newAuxLabel();
++  void Selection::Opaque::ENDIF(Reg src, ir::LabelIndex jip, ir::LabelIndex endifLabel ) {
++    if(0 == endifLabel)
++      this->block->endifLabel = this->newAuxLabel();
++    else
++      this->block->endifLabel = endifLabel;
+     this->LABEL(this->block->endifLabel);
+     SelectionInstruction *insn = this->appendInsn(SEL_OP_ENDIF, 0, 1);
+     insn->src(0) = src;
+@@ -1488,13 +1495,12 @@ namespace gbe
+         // Try all the patterns from best to worst
+         do {
+           if ((*it)->emit(*this, dag))
+-            break;
++          {
++             break;
++          }
+           ++it;
+         } while (it != end);
+         GBE_ASSERT(it != end);
+-<<<<<<< HEAD
+-        needEndif = needEndif && (insn.getParent()->needEndif);
+-=======
+         // If we are in if/endif fix mode, and this block is
+         // large enough, we need to insert endif/if pair to eliminate
+         // the too long if/endif block.
+@@ -1510,13 +1516,21 @@ namespace gbe
+           this->pop();
+           this->block->isLargeBlock = true;
+         }
++        needEndif = needEndif && (insn.getParent()->needEndif);
+ 
+->>>>>>> master
+         if (needEndif) {
+-          const ir::BasicBlock *curr = insn.getParent();
+-          const ir::BasicBlock *next = curr->getNextBlock();
+-          this->ENDIF(GenRegister::immd(0), next->getLabelIndex());
+-          needEndif = false;
++          if(!insn.getParent()->needIf)
++          {
++            this->ENDIF(GenRegister::immd(0), insn.getParent()->endifLabel, insn.getParent()->endifLabel);
++            needEndif = false;
++          }
++          else
++          {
++            const ir::BasicBlock *curr = insn.getParent();
++            const ir::BasicBlock *next = curr->getNextBlock();
++            this->ENDIF(GenRegister::immd(0), next->getLabelIndex());
++            needEndif = false;
++          }
+         }
+ 
+         // Output the code in the current basic block
+@@ -3251,8 +3265,12 @@ namespace gbe
+         }
+         sel.push();
+           sel.curr.predicate = GEN_PREDICATE_NORMAL;
+-
+-          sel.IF(GenRegister::immd(0), sel.block->endifLabel, sel.block->endifLabel);
++          if(!insn.getParent()->needEndif && insn.getParent()->needIf) {
++            ir::LabelIndex label = insn.getParent()->endifLabel;
++            sel.IF(GenRegister::immd(0), label, label);
++          } 
++          else 
++            sel.IF(GenRegister::immd(0), sel.block->endifLabel, sel.block->endifLabel);
+ 
+         sel.pop();
+       }
+@@ -3447,7 +3465,12 @@ namespace gbe
+         const LabelIndex jip = sel.ctx.getLabelIndex(&insn);
+         sel.MOV(ip, GenRegister::immuw(uint16_t(dst)));
+         if (!sel.block->hasBarrier)
+-          sel.ENDIF(GenRegister::immd(0), nextLabel);
++        {
++          if(insn.getParent()->needEndif && !insn.getParent()->needIf)
++                  sel.ENDIF(GenRegister::immd(0), insn.getParent()->endifLabel, insn.getParent()->endifLabel);
++          else
++            sel.ENDIF(GenRegister::immd(0), nextLabel);
++        }
+         sel.block->endifOffset = -1;
+         if (nextLabel == jip) return;
+         // Branch to the jump target
+@@ -3476,7 +3499,7 @@ namespace gbe
+ 
+       if (insn.isPredicated() == true) {
+         const Register pred = insn.getPredicateIndex();
+-
++        
+         // Update the PcIPs for all the branches. Just put the IPs of the next
+         // block. Next instruction will properly update the IPs of the lanes
+         // that actually take the branch
+@@ -3505,8 +3528,14 @@ namespace gbe
+         // Update the PcIPs
+         sel.MOV(ip, GenRegister::immuw(uint16_t(dst)));
+         sel.block->endifOffset = -1;
+-        if (!sel.block->hasBarrier)
++        if (!sel.block->hasBarrier) {
++          if(insn.getParent()->needEndif && !insn.getParent()->needIf)
++          {
++            sel.ENDIF(GenRegister::immd(0), insn.getParent()->endifLabel, insn.getParent()->endifLabel);
++          }
++          else
+           sel.ENDIF(GenRegister::immd(0), next);
++        }
+         // Branch to the jump target
+         sel.push();
+           sel.curr.execWidth = 1;
+@@ -3544,24 +3573,23 @@ namespace gbe
+       {
+         GBE_ASSERT(insn.isPredicated() == true);
+         const Register pred = insn.getPredicateIndex();
+-        const LabelIndex jip = insn.endiflabel;
+-        const uint64_t endifoffset = insn.endifoffset;
++        const LabelIndex jip = insn.getLabelIndex();
+         sel.push();
+-        std::cout<<"endifoffset "<<endifoffset<<std::endl;
+-        std::cout<<"endiflabel "<<jip<<std::endl;
+-         // sel.curr.physicalFlag = 0;
+-         // sel.curr.flagIndex = (uint64_t)pred;
++          sel.curr.physicalFlag = 0;
++          sel.curr.flagIndex = (uint64_t)pred;
++          sel.curr.inversePredicate = 1;
+           sel.curr.predicate = GEN_PREDICATE_NORMAL;
+-          sel.IF(GenRegister::immd(0), jip, jip, endifoffset, endifoffset);
++          sel.IF(GenRegister::immd(0), jip, jip);
++          sel.curr.inversePredicate = 0;
+         sel.pop();        
+       }
+       else if(opcode == OP_ENDIF)
+       {
+         GBE_ASSERT(insn.isPredicated() == false);
+-        const LabelIndex nextlabel = insn.getParent()->getNextBlock()->getLabelIndex();
++        const LabelIndex label = insn.getLabelIndex();
+         sel.push();
+           sel.curr.predicate = GEN_PREDICATE_NONE;
+-          sel.ENDIF(GenRegister::immd(0), nextlabel);
++          sel.ENDIF(GenRegister::immd(0), label, label);
+         sel.pop();
+       }
+       else
+diff --git a/backend/src/ir/function.hpp b/backend/src/ir/function.hpp
+index fe19bdb..c9bbe01 100644
+--- a/backend/src/ir/function.hpp
++++ b/backend/src/ir/function.hpp
+@@ -83,7 +83,10 @@ namespace ir {
+     }
+ 
+     set <Register> undefPhiRegs;
+-
++  public:
++    bool needEndif;
++    bool needIf;
++    LabelIndex endifLabel;
+   private:
+     friend class Function; //!< Owns the basic blocks
+     BlockSet predecessors; //!< Incoming blocks
+diff --git a/backend/src/ir/instruction.cpp b/backend/src/ir/instruction.cpp
+index 27af145..831e1d0 100644
+--- a/backend/src/ir/instruction.cpp
++++ b/backend/src/ir/instruction.cpp
+@@ -356,7 +356,6 @@ namespace ir {
+         GBE_ASSERT(op == OP_BRA || op == OP_ENDIF);
+         this->opcode = op;
+         this->labelIndex = labelIndex;
+-        std::cout<<"->>>>>>>>>>>>>>>>"<<(int)labelIndex<<std::endl;
+         this->hasPredicate = false;
+         this->hasLabel = true;
+       }
+diff --git a/backend/src/ir/unstructure_to_structure.cpp b/backend/src/ir/unstructure_to_structure.cpp
+index cdb1054..b4ac8ff 100644
+--- a/backend/src/ir/unstructure_to_structure.cpp
++++ b/backend/src/ir/unstructure_to_structure.cpp
+@@ -60,23 +60,8 @@ namespace analysis
+       it++;
+     }
+   }
+-/*  void ControlTree::MarkBelongToOutermostStructure(Node *node, bool status)
+-  {
+-    if(node->Type() == BasicBlock)
+-    {
+-      ir::BasicBlock* bb = ((BasicBlockNode *)node)->GetBasicBlock();
+-      bb->belongToOurtermostStructure = status;
+-      return;
+-    }
+-    NodeList::iterator it = node->children.begin();
+-    while(it != node->children.end())
+-    {
+-      MarkBelongToOutermostStructure(*it, status);
+-      it++;
+-    }
+ 
+-  }
+-*/
++
+   void ControlTree::MarkStructuredNodes(Node *node)
+   {
+     node->mark = true;
+@@ -91,7 +76,7 @@ namespace analysis
+   void ControlTree::InitializeNodes()
+   {
+       //getTopBlock returns reference of BasicBlock
+-      ir::BasicBlock &tmp_bb = fn->getTopBlock();
++      ir::BasicBlock& tmp_bb = fn->getTopBlock();
+       ir::BasicBlock* p_tmp_bb = &tmp_bb;
+       while(p_tmp_bb != NULL)
+       {
+@@ -99,6 +84,7 @@ namespace analysis
+         nodes.push_back(p_tmp_node);
+         bbmap[p_tmp_bb] = p_tmp_node;
+         p_tmp_bb = p_tmp_bb->getNextBlock();
++       // p_tmp_node->Fallthrough() = p_tmp_bb;
+       }
+ 
+       p_tmp_bb = &tmp_bb;
+@@ -124,11 +110,12 @@ namespace analysis
+ 
+         p_tmp_bb = p_tmp_bb->getNextBlock();
+       }
++      /*
+       NodeVector::iterator it = nodes.begin();
+       while(it!=nodes.end())
+       {
+         NodeSet::iterator itt = (*it)->Preds().begin();
+-        std::cout<<((BasicBlockNode *)(*it))->GetBasicBlock()->getLabelIndex()<<"->>>>>>";
++       // std::cout<<((BasicBlockNode *)(*it))->GetBasicBlock()->getLabelIndex()<<"->>>>>>";
+         while(itt != (*it)->Preds().end())
+         {
+           std::cout<<((BasicBlockNode *)(*itt))->GetBasicBlock()->getLabelIndex()<<" ";
+@@ -145,7 +132,7 @@ namespace analysis
+         std::cout<<std::endl;
+         it++;
+ 
+-      }
++      }*/
+   }
+ 
+   void ControlTree::DFSPostOrder(Node *start)//TODO:change to un-recrusive, for recrusive may lead to stack overflow.
+@@ -164,6 +151,29 @@ namespace analysis
+ 
+   }
+ 
++
++  bool ControlTree::IsCyclic(Node* node)
++  {
++    if(node->Type() == NaturalLoop || node->Type() == WhileLoop)
++      return true;
++
++    return false;
++  }
++
++
++  bool ControlTree::IsBackedge(const Node* head, const Node* tail)
++  {
++    const Node* match[] = {head, tail};
++    NodeList::iterator n = find_first_of(post_order.begin(), post_order.end(), match, match + 2);
++    if(*n == head)
++      return true;
++    if(*n == tail)
++      return false;
++
++    return false;
++  }
++
++
+   Node* ControlTree::AcyclicRegionType(Node* node, NodeSet& nset)
+   {
+     nset.clear();
+@@ -213,7 +223,7 @@ namespace analysis
+ 
+     if(nodes.size() >=2 )
+     {
+-      std::cout<<"Found sequence block"<<"   size   "<<nodes.size()<<std::endl;
++     /* std::cout<<"Found sequence block"<<"   size   "<<nodes.size()<<std::endl;
+       for(NodeList::iterator it = nodes.begin(); it!=nodes.end(); it++)
+       {
+         if((*it)->Type() == BasicBlock)
+@@ -225,9 +235,10 @@ namespace analysis
+         else
+ 
+                 std::cout<<"label:"<<(*it)->privatecounter<<std::endl;
+-      }
++      }*/
+       return InsertNode(new BlockNode(nodes));
+     }
++    
+     else if(node->Succs().size() == 2)//nodes.size() == 1
+     {
+       Node *m;
+@@ -238,17 +249,11 @@ namespace analysis
+       if(n->Succs().size() == 1 && n->Preds().size() == 1 && *(n->Succs().begin()) == m)
+       {
+ 
+-//        ir::LabelIndex endiflabel;
+-//        uint16_t endifoffset;
+-//        HandleThenNodeWithoutElse(n, endiflabel, endifoffset);
+-//        HandleIfNode(node, endiflabel, endifoffset);
+-
+         nset.clear();
+         nset.insert(node);
+         nset.insert(n);
+         
+-//        MarkStructuredNodes(n);
+-        std::cout<<"Found if node then n"<<std::endl;
++       /* std::cout<<"Found if node then n"<<std::endl;
+         int ifff, thenn;
+         if(node->Type()==BasicBlock)
+                 ifff = ((BasicBlockNode *)(node))->GetBasicBlock()->getLabelIndex();
+@@ -258,25 +263,18 @@ namespace analysis
+                 thenn = ((BasicBlockNode *)(n))->GetBasicBlock()->getLabelIndex();
+         else
+                 thenn = n->privatecounter;
+-        std::cout<<"IF "<<ifff<<" then "<<thenn<<std::endl;
++        std::cout<<"IF "<<ifff<<" then "<<thenn<<std::endl;*/
+         return InsertNode(new IfThenNode(node, n));
+       }
+       
+       //check for if node then m
++      
+       if(m->Succs().size() == 1 && m->Preds().size() == 1 && *(m->Succs().begin()) == n)//FIXME may be this could merge with the upper one.
+       {
+-
+-//        ir::LabelIndex endiflabel;
+-//        uint16_t endifoffset;
+-//        HandleThenNodeWithoutElse(m, endiflabel, endifoffset);
+-
+-//        HandleIfNode(node, endiflabel,  endifoffset);
+-      
+         nset.clear();
+         nset.insert(node);
+         nset.insert(m);
+-//        MarkStructuredNodes(m);
+-        std::cout<<"Found if node then m"<<std::endl;
++      /*  std::cout<<"Found if node then m"<<std::endl;
+ 
+         int ifff, thenn;
+         if(node->Type()==BasicBlock)
+@@ -287,22 +285,36 @@ namespace analysis
+                 thenn = ((BasicBlockNode *)(m))->GetBasicBlock()->getLabelIndex();
+         else
+                 thenn = m->privatecounter;
+-        std::cout<<"IF "<<ifff<<" then "<<thenn<<std::endl;
++        std::cout<<"IF "<<ifff<<" then "<<thenn<<std::endl;*/
+         return InsertNode(new IfThenNode(node, m));
+       }
+-#if 0
+-      //check for if node then n else m   or  if node then m else n
+-      if(m->succs().size() == 1 && n->succs().size() == 1 && 
+-         m->preds().size() == 1 && n->preds() == 1 &&
+-         *(m->succs().begin()) == *(n->succs().begin()) )
++
++      //check for if node then n else m 
++/*      if(m->Succs().size() == 1 && n->Succs().size() == 1 && 
++         m->Preds().size() == 1 && n->Preds().size() == 1 &&
++         *(m->Succs().begin()) == *(n->Succs().begin()) &&
++         node->Fallthrough() == n)
+       {
+         nset.clear();
+         nset.insert(node);
+-        nset.insert(m);
+         nset.insert(n);
+-        return InsertNode(new IfThenNode(node, m, n));
++        nset.insert(m);
++        return InsertNode(new IfElseNode(node, n, m));
+       }
+-#endif
++
++      //check for if node then m else n
++      if(m->Succs().size() == 1 && n->Succs().size() == 1 &&
++         m->Preds().size() == 1 && n->Preds().size() == 1 &&
++         *(m->Succs().begin()) == *(n->Succs().begin()) &&
++         node->Fallthrough() == m)
++      {
++        nset.clear();
++        nset.insert(node);
++        nset.insert(m);
++        nset.insert(n);
++        return InsertNode(new IfElseNode(node, m, n));
++      }*/
++
+     }
+     return NULL;
+ 
+@@ -364,53 +376,27 @@ namespace analysis
+     return NULL;
+   }
+ 
+-  void ControlTree::HandleIfNode(Node *node, ir::LabelIndex& endiflabel, uint16_t& endifoffset)
++  void ControlTree::HandleIfNode(Node *node, ir::LabelIndex& endiflabel)
+   {
+     ir::BasicBlock *pbb = node->GetExit();
+     ir::BranchInstruction* pinsn = static_cast<ir::BranchInstruction *>(pbb->getLastInstruction());
+-    assert(pinsn->isPredicated());
+-    //assert insn == BRA
+     ir::Register reg = pinsn->getPredicateIndex();
+-   // std::cout<<"REG ->"<<(int)reg<<std::endl;
+-    ir::LabelIndex lbindex = pinsn->getLabelIndex();
+-   // std::cout<<"LABEL ->"<<(int)lbindex<<std::endl;
+     ir::BasicBlock::iterator it = pbb->end();
+     it--;
+-    //cout<<"Erased ->"<<*it<<std::endl;
+-   // std::cout<<"LABEL ->"<<(int)lbindex<<std::endl;
+-   // std::cout<<"LABEL ->"<<(int)lbindex<<std::endl;
+     pbb->erase(it);
+-    
+-    ir::Instruction insn = ir::IF(lbindex, reg);
++    ir::Instruction insn = ir::IF(endiflabel, reg);
+     ir::Instruction* ppinsn = pbb->getParent().newInstruction(insn);
+-    ppinsn->endiflabel = endiflabel;
+-    ppinsn->endifoffset = endifoffset;
+-  //  std::cout<<"insn ->"<<insn<<std::endl;
+     pbb->append(*ppinsn);
+   }
+ 
+-  void ControlTree::HandleThenNodeWithoutElse(Node *node, ir::LabelIndex& endiflabel, uint16_t& endifoffset)
++  void ControlTree::HandleThenNodeWithoutElse(Node *node, ir::LabelIndex& endiflabel)
+   {
+     ir::BasicBlock *pbb = node->GetExit();
+     ir::BasicBlock::iterator it = pbb->end();
+     it--;
+-    ir::LabelIndex lbindex;
+-
+     ir::Instruction *plastinsn = pbb->getLastInstruction();
+-    
+-    if((*it).getOpcode() == ir::OP_BRA)
+-    {
+-      ir::BranchInstruction *pinsn = static_cast<ir::BranchInstruction *>(pbb->getLastInstruction());
+-      lbindex = pinsn->getLabelIndex(); 
+-     // endifoffset = pbb->size()-2;
+-    }
+-    else
+-    {
+-      lbindex = (*it).getParent()->getNextBlock()->getLabelIndex();
+-     // endifoffset = pbb->size()-1;
+-    }
+-
+-    ir::Instruction insn = ir::ENDIF(lbindex);
++    endiflabel = fn->newLabel();
++    ir::Instruction insn = ir::ENDIF(endiflabel);
+     ir::Instruction* ppinsn = pbb->getParent().newInstruction(insn);
+     bool appendbra = false;
+     if((*it).getOpcode() == ir::OP_BRA)
+@@ -418,21 +404,9 @@ namespace analysis
+       pbb->erase(it);
+       appendbra = true;
+     }
+-
+     pbb->append(*ppinsn);
+     if(appendbra)
+-    {
+       pbb->append(*plastinsn);
+-      endifoffset = 1;//pbb->size()-1;
+-    }
+-    else
+-    {
+-      endifoffset = 1;//pbb->size();
+-    }
+-    endiflabel = pbb->getLabelIndex();
+-    std::cout<<"->endiflabel "<<endiflabel<<std::endl;
+-
+-    std::cout<<"->endifoffset "<<endifoffset<<std::endl;
+   }
+ 
+   void ControlTree::Reduce(Node* node,  NodeSet nodeSet)
+@@ -444,15 +418,15 @@ namespace analysis
+       for(p = (*n)->Preds().begin(); p != (*n)->Preds().end(); p++)
+       {
+         if(nodeSet.find(*p) != nodeSet.end())
+-        {
+-          std::cout<<"continue le"<<std::endl;
+           continue;
+-        }
+ 
+         (*p)->Succs().erase(*n);
+ 
+         (*p)->Succs().insert(node);
+         node->Preds().insert(*p);
++
++        if((*p)->Fallthrough() == *n)
++          (*p)->Fallthrough() = node;
+       }
+    
+ 
+@@ -466,6 +440,9 @@ namespace analysis
+ 
+        (*s)->Preds().insert(node);
+        node->Succs().insert(*s);
++
++       if((*n)->Fallthrough() == *s)
++         node->Fallthrough() = *s;
+      }
+     }
+ #if 0
+@@ -520,12 +497,12 @@ namespace analysis
+ 
+   void ControlTree::StructuralAnalysis(Node *entry)
+   {
++
+     Node* n;
+     NodeSet nset;
+     NodeList reachUnder;
+     bool changed;
+-    
+-
++    int foundStructureCount = 0; 
+     do
+     {
+       changed = false;
+@@ -542,12 +519,14 @@ namespace analysis
+         
+         if( NULL != region)
+         {
++          if(region->Type() == IfThen)
++            foundStructureCount++;
+           changed = true;
+ 
+           Reduce(region, nset);
++
+           if(nset.find(entry) != nset.end())
+           {
+-                  std::cout<<"found entry->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"<<std::endl;
+             entry = region;
+           }
+         }
+@@ -561,8 +540,9 @@ namespace analysis
+       {
+         break;
+       }
+-      std::cout<<"post_order size"<<post_order.size()<<std::endl;
+     } while(post_order.size()>1);
++
++    std::cout<<"Found Structure If-Then Count :"<<foundStructureCount<<std::endl;
+   }
+ 
+ 
+@@ -571,7 +551,6 @@ namespace analysis
+     NodeVector::iterator it;
+     NodeVector::iterator end = nodes.end();
+     NodeVector::iterator begin = nodes.begin();
+-    NodeVector outermost_structure;
+     //try to find all the outermost control structure
+     it = end;
+     it--;
+@@ -581,7 +560,6 @@ namespace analysis
+       {
+         if(false == (*it)->mark)
+         {
+-          outermost_structure.push_back(*it);
+           MarkStructuredNodes(*it);
+           MarkNeedEndif(*it, false);
+           MarkNeedIf(*it, false);
+@@ -591,6 +569,8 @@ namespace analysis
+           ir::BasicBlock* eexit = (*it)->GetExit();
+           entry->needEndif = false;
+           eexit->needEndif = true;
++          entry->endifLabel = fn->newLabel();
++          eexit->endifLabel = entry->endifLabel;        
+         }
+       }
+       it--;
+@@ -603,20 +583,11 @@ namespace analysis
+       {
+         case IfThen:
+           NodeList::iterator child_iter = (*it)->children.end();
+-          uint16_t endifoffset;
+           ir::LabelIndex endiflabel;
+           child_iter--;
+-          HandleThenNodeWithoutElse(*child_iter, endiflabel, endifoffset);
++          HandleThenNodeWithoutElse(*child_iter, endiflabel);
+           child_iter--;
+-          HandleIfNode(*child_iter, endiflabel, endifoffset);
+-          child_iter = (*it)->children.begin();
+-          ir::BasicBlock* eexit = (*child_iter)->GetExit();
+-          if(eexit->needEndif == false && eexit->needIf == true)
+-          {
+-            eexit->endifOffset = endifoffset+1;
+-            eexit->endifLabel = endiflabel;
+-          }
+-
++          HandleIfNode(*child_iter, endiflabel);
+           break;
+         
+       }
+diff --git a/backend/src/ir/unstructure_to_structure.hpp b/backend/src/ir/unstructure_to_structure.hpp
+index e5db150..6da362b 100644
+--- a/backend/src/ir/unstructure_to_structure.hpp
++++ b/backend/src/ir/unstructure_to_structure.hpp
+@@ -10,6 +10,7 @@
+ #include <vector>
+ #include <map>
+ #include <list>
++#include <algorithm>
+ using namespace std;
+ using namespace gbe;
+ namespace analysis
+@@ -19,6 +20,7 @@ namespace analysis
+     BasicBlock = 0,
+     Block,
+     IfThen,
++    IfElse,
+     WhileLoop,
+     NaturalLoop
+   } ;
+@@ -40,10 +42,12 @@ namespace analysis
+     }
+     NodeSet& Preds() { return preds; }
+     NodeSet& Succs() { return succs; }
++    Node*& Fallthrough() { return fallthrough; }
+     RegionType Type() { return rtype; }
+    // Node &GetLastBaseNode();//TODO  implement it
+     virtual ir::BasicBlock* GetEntry() {return NULL;};
+     virtual ir::BasicBlock* GetExit() {return NULL;};
++
+   public:
+     int privatecounter;
+  //   static int allcounter=0;
+@@ -51,6 +55,7 @@ namespace analysis
+     NodeSet preds;
+     NodeSet succs;
+     NodeList children;
++    Node* fallthrough;
+     bool mark;
+   };
+  
+@@ -91,7 +96,6 @@ namespace analysis
+ 
+   class IfThenNode : public Node
+   {
+-
+   public:
+     IfThenNode(Node* cond, Node* ifTrue, Node* ifFalse = NULL) : Node(IfThen, BuildChildren(cond, ifTrue, ifFalse)){}
+     virtual ir::BasicBlock* GetEntry() 
+@@ -125,6 +129,37 @@ namespace analysis
+     }
+   };
+   
++  class IfElseNode : public Node
++  {
++  public:
++    IfElseNode(Node* cond, Node* ifTrue, Node* ifFalse) : Node(IfElse, BuildChildren(cond, ifTrue, ifFalse)) {}
++    virtual ir::BasicBlock* GetEntry()
++    {
++      NodeList::const_iterator it = children.begin();
++      while((*it)->Type() != BasicBlock)
++        it = (*it)->children.begin();
++      return (*it)->GetEntry();
++    }
++    virtual ir::BasicBlock* GetExit()
++    {
++      NodeList::const_iterator it = children.begin();
++      while((*it)->Type() != BasicBlock)
++      {
++        it = (*it)->children.end();
++        it--;
++      }
++      return (*it)->GetExit();
++    }
++  private:
++    const NodeList BuildChildren(Node* cond, Node* ifTrue, Node* ifFalse)
++    {
++      NodeList children;
++      children.push_back(cond);
++      children.push_back(ifTrue);
++      children.push_back(ifFalse);
++      return children;
++    }
++  };
+   class WhileLoopNode : public Node
+   {
+   
+@@ -148,8 +183,8 @@ namespace analysis
+     void DFSPostOrder(Node *start);
+     bool Path(Node *, Node *, Node *notthrough = NULL);
+     //Insert IF ir in proper proper position of proper BasicBlock
+-    void HandleIfNode(Node *, ir::LabelIndex&, uint16_t&);
+-    void HandleThenNodeWithoutElse(Node *, ir::LabelIndex&, uint16_t&);
++    void HandleIfNode(Node *, ir::LabelIndex&);
++    void HandleThenNodeWithoutElse(Node *, ir::LabelIndex&);
+     void Reduce(Node* node,  NodeSet nodeSet);
+     void Compact(Node* node,  NodeSet nodeSet);
+     Node* GetNodesEntry() const  { return nodes_entry;}
+@@ -159,6 +194,8 @@ namespace analysis
+     void MarkStructuredNodes(Node *); 
+     void MarkNeedEndif(Node *, bool);
+     void MarkNeedIf(Node *, bool);
++    bool IsCyclic(Node*);
++    bool IsBackedge(const Node*, const Node*);
+    // void MarkStructuredBasicBlocks(Node *);
+     void HandleStructuredNodes();
+     NodeVector nodes;
+diff --git a/backend/src/llvm/llvm_to_gen.cpp b/backend/src/llvm/llvm_to_gen.cpp
+index 70f0a9a..5946dc4 100644
+--- a/backend/src/llvm/llvm_to_gen.cpp
++++ b/backend/src/llvm/llvm_to_gen.cpp
+@@ -231,12 +231,12 @@ namespace gbe
+     while(it != fs.end())
+     {
+       analysis::ControlTree *ct = new analysis::ControlTree(it->second);
+-      if(it->first == "abc")
+-        ct->Analyze();
++     // if(it->first == "abc")
++      { std::cout<<"Function Name "<<it->first<<std::endl;
++              ct->Analyze();}
+       delete ct;
+       it++;
+     }
+-    std::cout<<"FINISH ->>>>>>>>>>>>>>>>>>>>>>> GEN"<<std::endl;
+     return true;
+   }
+ } /* namespace gbe */
+-- 
+1.8.3.2
+
